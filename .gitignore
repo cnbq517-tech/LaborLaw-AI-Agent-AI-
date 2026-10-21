@@ -21,3 +21,20 @@ data/
 
 # 忽略大文件缓存
 chunks_cache.jsonl
+
+# HarmonyOS local files and build outputs
+.hvigor/
+.deveco/
+.idea/
+oh_modules/
+build/
+local.properties
+*.hap
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key
+*.log
+.claude/
+.DS_Store

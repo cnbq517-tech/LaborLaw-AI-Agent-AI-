@@ -1,0 +1,36 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "劳动法 AI 助手"
+    },
+    {
+      "name": "LawFormAbility_label",
+      "value": "劳动法服务卡片"
+    },
+    {
+      "name": "LawFormAbility_desc",
+      "value": "从桌面快速进入劳动法 AI 咨询"
+    },
+    {
+      "name": "LawQuickCard_display_name",
+      "value": "劳动权益随身卡"
+    },
+    {
+      "name": "LawQuickCard_desc",
+      "value": "四类劳动权益咨询入口与互动普法提示"
+    },
+    {
+      "name": "float_view_permission_reason",
+      "value": "在其他应用中显示您主动开启的维权材料待补清单"
+    }
+  ]
+}
