@@ -64,8 +64,9 @@ export class ChatCompletionRequest {
   messages: RequestChatMessage[] = [];
   stream: boolean = false;
 
-  constructor(model: string, messages: ChatMessage[]) {
+  constructor(model: string, messages: ChatMessage[], stream: boolean = false) {
     this.model = model;
+    this.stream = stream;
     messages.forEach((message: ChatMessage) => {
       this.messages.push(new RequestChatMessage(message.role, message.apiContent));
     });
@@ -169,6 +170,22 @@ export class ChatCompletionChoice {
 export class ChatCompletionResponse {
   id: string = '';
   choices: ChatCompletionChoice[] = [];
+}
+
+export class ChatCompletionDelta {
+  content: string = '';
+  refusal: string = '';
+}
+
+export class ChatCompletionChunkChoice {
+  index: number = 0;
+  delta: ChatCompletionDelta = new ChatCompletionDelta();
+  finish_reason: string = '';
+}
+
+export class ChatCompletionChunk {
+  choices: ChatCompletionChunkChoice[] = [];
+  error: ApiErrorDetail | undefined = undefined;
 }
 
 export class ApiErrorDetail {

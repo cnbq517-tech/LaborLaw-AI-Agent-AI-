@@ -6,6 +6,7 @@ import {
   HdsTabs,
   HdsTabsController,
   HdsTabsFloatingStyle,
+  hdsEffect,
   hdsMaterial
 } from '@kit.UIDesignKit';
 import {
@@ -19,15 +20,60 @@ import {
   LawCitation,
   PromptSuggestion
 } from '../models/AppModels';
-import { AiApiClient } from '../services/AiApiClient';
+import { AiApiClient, StreamHandle } from '../services/AiApiClient';
 import { AttachmentService } from '../services/AttachmentService';
+import {
+  ChatState,
+  ChatStateStore,
+  DossierState,
+  MAX_QUICK_SESSIONS,
+  QuickSession
+} from '../services/ChatStateStore';
 import { ConfigStore } from '../services/ConfigStore';
 import { ChecklistFloatService } from '../services/ChecklistFloatService';
+import { AnswerSegment, CitationText, HighlightRange } from '../services/CitationText';
 import { KnowledgeService } from '../services/KnowledgeService';
 import { LawCardStateService } from '../services/LawCardStateService';
 import { DARK, LIGHT, ThemeColors } from '../theme/Theme';
 
 const CONTENT_BOTTOM: number = 128;
+const STREAM_QUICK: number = 0;
+const STREAM_CASE: number = 1;
+const STREAM_REPORT: number = 2;
+// Batches streamed tokens so the UI re-renders a few times per second at most.
+const STREAM_RENDER_INTERVAL: number = 80;
+const PERSIST_DELAY: number = 600;
+const STOPPED_SUFFIX: string = '\n\n（已停止生成）';
+const DRAWER_WIDTH: number = 320;
+const SHEET_CITATION: number = 6;
+const LIGHT_BUTTON: number = 0;
+const LIGHT_PANEL: number = 2;
+
+interface IconParams {
+  res: Resource;
+  size: number;
+  color: ResourceColor;
+}
+
+class HistoryGroup {
+  label: string;
+  sessions: QuickSession[];
+
+  constructor(label: string, sessions: QuickSession[]) {
+    this.label = label;
+    this.sessions = sessions;
+  }
+}
+
+class StreamOutcome {
+  text: string;
+  stopped: boolean;
+
+  constructor(text: string, stopped: boolean) {
+    this.text = text;
+    this.stopped = stopped;
+  }
+}
 
 @Entry
 @Component
@@ -81,6 +127,24 @@ struct Index {
   @State headerProgress: number = 0;
   @State sheetKind: number = 0;
   @State sheetCitations: LawCitation[] = [];
+  @State quickStreaming: string = '';
+  @State caseStreaming: string = '';
+  @State reportStreaming: string = '';
+  @State quickHistory: QuickSession[] = [];
+  @State quickStreamCitations: LawCitation[] = [];
+  @State caseStreamCitations: LawCitation[] = [];
+  @State reportStreamCitations: LawCitation[] = [];
+  @State detailCitations: LawCitation[] = [];
+  @State detailIndex: number = 0;
+  @State detailContent: string = '';
+  @State pressedSessionId: string = '';
+  @State drawerGlowX: number = 0;
+  @State drawerGlowY: number = 0;
+  @State drawerGlowOn: boolean = false;
+  @State drawerVisible: boolean = false;
+  @State drawerOpen: boolean = false;
+  @State drawerDrag: number = 0;
+  @State historyQuery: string = '';
 
   private hdsTabsController: HdsTabsController = new HdsTabsController();
   private quickScroller: Scroller = new Scroller();
@@ -101,6 +165,14 @@ struct Index {
   private modelNameController: TextInputController = new TextInputController();
   private apiKeyController: TextInputController = new TextInputController();
   private mainWindow: window.Window | undefined = undefined;
+  private streamHandles: (StreamHandle | undefined)[] = [undefined, undefined, undefined];
+  private persistTimer: number = -1;
+  private stateRestored: boolean = false;
+  private quickSessionId: string = '';
+  private detailLeads: string[] = [];
+  private detailReturnSheet: number = 0;
+  private lightEffects: Map<string, VisualEffect> = new Map<string, VisualEffect>();
+  private historySearchController: TextInputController = new TextInputController();
   private darkListener: mediaquery.MediaQueryListener | undefined = undefined;
   private keyboardHeightCallback: Callback<number> = (height: number): void => {
     this.keyboardVisible = height > 0;
@@ -137,9 +209,18 @@ struct Index {
     this.applyCardScenario();
     this.loadConfig();
     this.loadKnowledge();
+    this.restoreState();
   }
 
   aboutToDisappear(): void {
+    this.streamHandles.forEach((handle: StreamHandle | undefined) => {
+      handle?.cancel();
+    });
+    if (this.persistTimer !== -1) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = -1;
+      this.persistNow();
+    }
     if (this.mainWindow !== undefined) {
       this.mainWindow.off('keyboardHeightChange', this.keyboardHeightCallback);
       this.mainWindow = undefined;
@@ -148,6 +229,219 @@ struct Index {
       this.darkListener.off('change', this.darkChangeCallback);
       this.darkListener = undefined;
     }
+  }
+
+  onBackPress(): boolean {
+    if (this.drawerVisible) {
+      this.closeHistoryDrawer();
+      return true;
+    }
+    return false;
+  }
+
+  private openHistoryDrawer(): void {
+    if (this.drawerVisible) {
+      return;
+    }
+    this.quickQuestionController.stopEditing();
+    this.historyQuery = '';
+    this.drawerDrag = 0;
+    this.drawerVisible = true;
+    this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 320, curve: Curve.FastOutSlowIn }, () => {
+      this.drawerOpen = true;
+    });
+  }
+
+  private closeHistoryDrawer(): void {
+    if (!this.drawerVisible) {
+      return;
+    }
+    this.historySearchController.stopEditing();
+    if (this.reduceMotion) {
+      this.drawerOpen = false;
+      this.drawerDrag = 0;
+      this.drawerVisible = false;
+      return;
+    }
+    this.getUIContext().animateTo({
+      duration: 240,
+      curve: Curve.FastOutSlowIn,
+      onFinish: () => {
+        if (!this.drawerOpen) {
+          this.drawerVisible = false;
+        }
+      }
+    }, () => {
+      this.drawerOpen = false;
+      this.drawerDrag = 0;
+    });
+  }
+
+  private settleDrawerDrag(velocityX: number): void {
+    if (this.drawerDrag < -DRAWER_WIDTH * 0.3 || velocityX < -800) {
+      this.closeHistoryDrawer();
+      return;
+    }
+    this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 200, curve: Curve.FastOutSlowIn }, () => {
+      this.drawerDrag = 0;
+    });
+  }
+
+  // Swiping right on the 普法 page pulls the drawer out under the finger.
+  // The very screen edge belongs to the system back gesture, so this works
+  // anywhere on the page instead of relying on an edge swipe.
+  private drawerSwiping: boolean = false;
+
+  private beginDrawerSwipe(): void {
+    if (this.drawerVisible || this.sheetKind !== 0) {
+      return;
+    }
+    this.drawerSwiping = true;
+    this.quickQuestionController.stopEditing();
+    this.historyQuery = '';
+    this.drawerDrag = -DRAWER_WIDTH;
+    this.drawerOpen = true;
+    this.drawerVisible = true;
+  }
+
+  private updateDrawerSwipe(offsetX: number): void {
+    if (!this.drawerSwiping) {
+      return;
+    }
+    this.drawerDrag = Math.max(-DRAWER_WIDTH, Math.min(0, offsetX - DRAWER_WIDTH));
+  }
+
+  private endDrawerSwipe(offsetX: number, velocityX: number): void {
+    if (!this.drawerSwiping) {
+      return;
+    }
+    this.drawerSwiping = false;
+    if (offsetX > DRAWER_WIDTH * 0.35 || velocityX > 600) {
+      this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 240, curve: Curve.FastOutSlowIn }, () => {
+        this.drawerDrag = 0;
+      });
+    } else {
+      this.closeHistoryDrawer();
+    }
+  }
+
+  // Lists only show the pressed state once they are sure the touch is not a
+  // scroll, which can miss quick taps. Highlight on touch-down instead.
+  private trackRowPress(id: string, event: TouchEvent): void {
+    if (event.type === TouchType.Down) {
+      this.pressedSessionId = id;
+    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      this.pressedSessionId = '';
+    }
+  }
+
+  // A soft light follows the finger across the drawer, like the floating tab
+  // bar's light effect.
+  private trackDrawerGlow(event: TouchEvent): void {
+    if (event.touches.length === 0) {
+      return;
+    }
+    const touch: TouchObject = event.touches[0];
+    if (event.type === TouchType.Down) {
+      this.drawerGlowX = touch.windowX;
+      this.drawerGlowY = touch.windowY;
+      this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 140, curve: Curve.EaseOut }, () => {
+        this.drawerGlowOn = true;
+      });
+    } else if (event.type === TouchType.Move) {
+      this.drawerGlowX = touch.windowX;
+      this.drawerGlowY = touch.windowY;
+    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 420, curve: Curve.EaseOut }, () => {
+        this.drawerGlowOn = false;
+      });
+    }
+  }
+
+  private startNewConsultation(): void {
+    if (this.isQuickSending) {
+      return;
+    }
+    this.returnToQuickHome();
+    this.currentSection = AppSection.QUICK;
+    this.closeHistoryDrawer();
+  }
+
+  private openSessionFromDrawer(session: QuickSession): void {
+    if (this.isQuickSending) {
+      return;
+    }
+    this.openQuickSession(session);
+    this.closeHistoryDrawer();
+  }
+
+  private historyGroups(): HistoryGroup[] {
+    const query: string = this.historyQuery.trim().toLowerCase();
+    const sessions: QuickSession[] = query.length === 0 ? this.quickHistory :
+      this.quickHistory.filter((session: QuickSession) =>
+        session.title.toLowerCase().includes(query) ||
+        session.messages.some((message: ChatMessage) => message.content.toLowerCase().includes(query)));
+    const now: Date = new Date();
+    const startOfToday: number = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const day: number = 24 * 60 * 60 * 1000;
+    const labels: string[] = ['今天', '昨天', '近 7 天', '更早'];
+    const buckets: QuickSession[][] = [[], [], [], []];
+    sessions.forEach((session: QuickSession) => {
+      if (session.updatedAt >= startOfToday) {
+        buckets[0].push(session);
+      } else if (session.updatedAt >= startOfToday - day) {
+        buckets[1].push(session);
+      } else if (session.updatedAt >= startOfToday - 6 * day) {
+        buckets[2].push(session);
+      } else {
+        buckets[3].push(session);
+      }
+    });
+    const groups: HistoryGroup[] = [];
+    buckets.forEach((bucket: QuickSession[], index: number) => {
+      if (bucket.length > 0) {
+        groups.push(new HistoryGroup(labels[index], bucket));
+      }
+    });
+    return groups;
+  }
+
+  private isActiveSession(session: QuickSession): boolean {
+    return this.quickMessages.length > 0 && session.id === this.quickSessionId;
+  }
+
+  // HarmonyOS point light (光感): buttons emit a light that follows the finger
+  // while pressed; rows and the drawer edge pick up light from nearby sources.
+  private light(kind: number): VisualEffect | undefined {
+    const key: string = kind.toString() + (this.isDark ? 'd' : 'l');
+    const cached: VisualEffect | undefined = this.lightEffects.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    let effect: VisualEffect | undefined = undefined;
+    try {
+      const builder: hdsEffect.HdsEffectBuilder = new hdsEffect.HdsEffectBuilder();
+      if (kind === LIGHT_PANEL) {
+        builder.pointLight({ illuminatedType: hdsEffect.PointLightIlluminatedType.DEFAULT_FEATHERING_BORDER });
+      } else {
+        builder.pointLight({
+          sourceType: hdsEffect.PointLightSourceType.BRIGHT,
+          illuminatedType: hdsEffect.PointLightIlluminatedType.BORDER_CONTENT,
+          options: {
+            color: this.cx.glow,
+            intensity: 2,
+            height: 48,
+            bloom: this.isDark ? 0.6 : 0.3
+          }
+        });
+        builder.pressShadow(hdsEffect.PressShadowType.BLEND_GRADIENT);
+      }
+      effect = builder.buildEffect();
+      this.lightEffects.set(key, effect);
+    } catch (error) {
+      effect = undefined;
+    }
+    return effect;
   }
 
   private observeTheme(): void {
@@ -228,6 +522,311 @@ struct Index {
     } catch (error) {
       this.knowledgeState = '本地法律资料加载失败';
     }
+  }
+
+  private async restoreState(): Promise<void> {
+    try {
+      const state: ChatState = await ChatStateStore.load(this.abilityContext());
+      // Anything the user started before the file finished loading wins.
+      if (this.quickMessages.length === 0) {
+        this.quickMessages = state.quickMessages;
+        this.quickSessionId = state.quickSessionId;
+      }
+      if (this.caseMessages.length === 0) {
+        this.caseMessages = state.caseMessages;
+      }
+      const dossier: DossierState = state.dossier;
+      if (!this.hasDossierInput()) {
+        this.location = dossier.location;
+        this.company = dossier.company;
+        this.salary = dossier.salary;
+        this.timeline = dossier.timeline;
+        this.request = dossier.request;
+        this.details = dossier.details;
+      }
+      if (this.dossierReport.length === 0) {
+        this.dossierReport = dossier.report;
+        this.reportCitations = dossier.reportCitations;
+      }
+      this.updateProgress();
+    } catch (error) {
+      // A damaged state file only costs the saved history; start fresh.
+    }
+    try {
+      const sessions: QuickSession[] = await ChatStateStore.loadHistory(this.abilityContext());
+      // Keep sessions recorded before loading finished at the top.
+      const seen: Set<string> = new Set<string>();
+      this.quickHistory.forEach((session: QuickSession) => {
+        seen.add(session.id);
+      });
+      this.quickHistory = this.quickHistory
+        .concat(sessions.filter((session: QuickSession) => !seen.has(session.id)))
+        .slice(0, MAX_QUICK_SESSIONS);
+    } catch (error) {
+      // A damaged history file only costs the archived consultations.
+    } finally {
+      this.stateRestored = true;
+    }
+  }
+
+  // Archives the current 普法 conversation after each exchange, so going back
+  // to the home page never loses it.
+  private recordQuickSession(): void {
+    if (this.quickMessages.length === 0) {
+      return;
+    }
+    if (this.quickSessionId.length === 0) {
+      this.quickSessionId = Date.now().toString(36) + Math.floor(Math.random() * 1679616).toString(36);
+    }
+    // A session's time is when its last message was sent. Switching sessions or
+    // going home archives the open one, but must not bump an unchanged session.
+    const archived: QuickSession | undefined =
+      this.quickHistory.find((item: QuickSession) => item.id === this.quickSessionId);
+    if (archived !== undefined && archived.messages.length === this.quickMessages.length) {
+      return;
+    }
+    const session: QuickSession = new QuickSession(this.quickSessionId,
+      this.sessionTitle(this.quickMessages), Date.now(), this.quickMessages);
+    this.quickHistory = [session]
+      .concat(this.quickHistory.filter((item: QuickSession) => item.id !== session.id))
+      .slice(0, MAX_QUICK_SESSIONS);
+    this.saveQuickHistory();
+  }
+
+  private saveQuickHistory(): void {
+    try {
+      ChatStateStore.saveHistory(this.abilityContext(), this.quickHistory).catch(() => {
+        // Archiving is best effort; the current conversation is unaffected.
+      });
+    } catch (error) {
+      // The page may already be detached from its ability context.
+    }
+  }
+
+  private sessionTitle(messages: ChatMessage[]): string {
+    const first: ChatMessage | undefined =
+      messages.find((message: ChatMessage) => message.role === ChatRole.USER);
+    const content: string = first !== undefined ? first.content.trim() : '';
+    const firstLine: string = content.split('\n')[0].trim();
+    if (firstLine.length === 0) {
+      return '普法咨询';
+    }
+    return firstLine.length > 40 ? firstLine.substring(0, 40) + '…' : firstLine;
+  }
+
+  private openQuickSession(session: QuickSession): void {
+    if (this.isQuickSending) {
+      return;
+    }
+    if (this.quickSessionId !== session.id) {
+      this.recordQuickSession();
+    }
+    this.sheetKind = 0;
+    this.quickQuestionController.stopEditing();
+    this.quickSessionId = session.id;
+    this.quickMessages = session.messages;
+    this.quickError = '';
+    this.currentSection = AppSection.QUICK;
+    this.scrollConversationToBottom(this.quickScroller);
+    this.schedulePersist();
+  }
+
+  private deleteQuickSession(id: string): void {
+    this.quickHistory = this.quickHistory.filter((session: QuickSession) => session.id !== id);
+    if (this.quickSessionId === id) {
+      // Keep the open conversation but archive it as a new session next time.
+      this.quickSessionId = '';
+      this.schedulePersist();
+    }
+    this.saveQuickHistory();
+  }
+
+  private sessionTime(timestamp: number): string {
+    if (timestamp <= 0) {
+      return '';
+    }
+    const date: Date = new Date(timestamp);
+    const now: Date = new Date();
+    const pad = (value: number): string => value < 10 ? '0' + value.toString() : value.toString();
+    const time: string = pad(date.getHours()) + ':' + pad(date.getMinutes());
+    if (date.toDateString() === now.toDateString()) {
+      return '今天 ' + time;
+    }
+    const prefix: string = date.getFullYear() === now.getFullYear() ? '' : date.getFullYear().toString() + '年';
+    return prefix + (date.getMonth() + 1).toString() + '月' + date.getDate().toString() + '日 ' + time;
+  }
+
+  private sessionMeta(session: QuickSession): string {
+    const rounds: number =
+      session.messages.filter((message: ChatMessage) => message.role === ChatRole.USER).length;
+    return this.sessionTime(session.updatedAt) + ' · ' + rounds.toString() + ' 轮问答';
+  }
+
+  private hasDossierInput(): boolean {
+    for (let index: number = 0; index < 6; index++) {
+      if (this.fieldFilled(index)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer !== -1) {
+      clearTimeout(this.persistTimer);
+    }
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = -1;
+      this.persistNow();
+    }, PERSIST_DELAY);
+  }
+
+  private persistNow(): void {
+    if (!this.stateRestored) {
+      // Saving before the restore finishes would overwrite the stored history.
+      this.schedulePersist();
+      return;
+    }
+    const state: ChatState = new ChatState();
+    state.quickMessages = this.quickMessages;
+    state.quickSessionId = this.quickSessionId;
+    state.caseMessages = this.caseMessages;
+    state.dossier.location = this.location;
+    state.dossier.company = this.company;
+    state.dossier.salary = this.salary;
+    state.dossier.timeline = this.timeline;
+    state.dossier.request = this.request;
+    state.dossier.details = this.details;
+    state.dossier.report = this.dossierReport;
+    state.dossier.reportCitations = this.reportCitations;
+    try {
+      ChatStateStore.save(this.abilityContext(), state).catch(() => {
+        // Saving history is best effort; the conversation itself is unaffected.
+      });
+    } catch (error) {
+      // The page may already be detached from its ability context.
+    }
+  }
+
+  private clearLocalRecords(): void {
+    this.getUIContext().showAlertDialog({
+      title: '清空本机记录',
+      message: '将删除普法咨询及其历史记录、案件对话、卷宗内容和分析报告。此操作无法撤销。',
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '清空',
+        fontColor: this.cx.danger,
+        action: () => {
+          this.streamHandles.forEach((handle: StreamHandle | undefined) => {
+            handle?.cancel();
+          });
+          this.quickMessages = [];
+          this.quickSessionId = '';
+          this.quickHistory = [];
+          this.saveQuickHistory();
+          this.caseMessages = [];
+          this.quickError = '';
+          this.caseError = '';
+          this.location = '';
+          this.company = '';
+          this.salary = '';
+          this.timeline = '';
+          this.request = '';
+          this.details = '';
+          this.dossierReport = '';
+          this.reportCitations = [];
+          this.reportError = '';
+          this.reportStage = 0;
+          this.updateProgress();
+          this.schedulePersist();
+        }
+      }
+    });
+  }
+
+  private beginStream(kind: number): StreamHandle {
+    const handle: StreamHandle = new StreamHandle();
+    this.streamHandles[kind] = handle;
+    return handle;
+  }
+
+  private stopStream(kind: number): void {
+    this.streamHandles[kind]?.cancel();
+  }
+
+  private setStreamingText(kind: number, text: string): void {
+    if (kind === STREAM_QUICK) {
+      this.quickStreaming = text;
+    } else if (kind === STREAM_CASE) {
+      this.caseStreaming = text;
+    } else {
+      this.reportStreaming = text;
+    }
+  }
+
+  private async runStream(
+    kind: number,
+    handle: StreamHandle,
+    messages: ChatMessage[],
+    citations: LawCitation[],
+    scroller: Scroller | undefined
+  ): Promise<StreamOutcome> {
+    if (kind === STREAM_QUICK) {
+      this.quickStreamCitations = citations;
+    } else if (kind === STREAM_CASE) {
+      this.caseStreamCitations = citations;
+    } else {
+      this.reportStreamCitations = citations;
+    }
+    let latest: string = '';
+    let timer: number = -1;
+    let firstRender: boolean = true;
+    try {
+      const text: string = await AiApiClient.stream(this.currentConfig(), messages, (partial: string): void => {
+        latest = partial;
+        if (timer !== -1) {
+          return;
+        }
+        timer = setTimeout(() => {
+          timer = -1;
+          if (handle.cancelled) {
+            return;
+          }
+          let follow: boolean = false;
+          if (scroller !== undefined) {
+            try {
+              follow = firstRender || scroller.isAtEnd();
+            } catch (error) {
+              follow = false;
+            }
+          }
+          firstRender = false;
+          this.setStreamingText(kind, KnowledgeService.validateAnswer(latest, citations));
+          if (follow && scroller !== undefined) {
+            this.scrollConversationToBottom(scroller);
+          }
+        }, STREAM_RENDER_INTERVAL);
+      }, handle);
+      return new StreamOutcome(text, handle.cancelled);
+    } finally {
+      if (timer !== -1) {
+        clearTimeout(timer);
+      }
+      this.setStreamingText(kind, '');
+      if (this.streamHandles[kind] === handle) {
+        this.streamHandles[kind] = undefined;
+      }
+    }
+  }
+
+  private finalAnswer(outcome: StreamOutcome, citations: LawCitation[]): string {
+    const answer: string = KnowledgeService.validateAnswer(outcome.text, citations);
+    return outcome.stopped ? answer + STOPPED_SUFFIX : answer;
   }
 
   private onCardScenarioChanged(): void {
@@ -385,6 +984,7 @@ struct Index {
     this.quickQuestionController.stopEditing();
     this.isQuickSending = true;
     this.quickError = '';
+    const handle: StreamHandle = this.beginStream(STREAM_QUICK);
     LawCardStateService.recordConsultation(
       this.abilityContext(),
       LawCardStateService.topicForPrompt(prompt)
@@ -394,7 +994,10 @@ struct Index {
 
     try {
       const knowledge: KnowledgeResult =
-        KnowledgeService.search(prompt + '\n' + attachment.text.substring(0, 2000));
+        await KnowledgeService.search(prompt + '\n' + attachment.text.substring(0, 2000));
+      if (handle.cancelled) {
+        return;
+      }
       const displayPrompt: string = attachment.name.length > 0 ?
         prompt + '\n附件：' + attachment.name : prompt;
       const apiPrompt: string = this.attachmentPrompt(prompt, attachment);
@@ -406,15 +1009,23 @@ struct Index {
       this.scrollConversationToBottom(this.quickScroller);
       const apiMessages: ChatMessage[] =
         this.conversationMessages(this.quickSystemPrompt(knowledge), this.quickMessages);
-      const rawAnswer: string = await AiApiClient.send(this.currentConfig(), apiMessages);
-      const answer: string = KnowledgeService.validateAnswer(rawAnswer, knowledge.citations);
-      this.quickMessages =
-        this.quickMessages.concat([new ChatMessage(ChatRole.ASSISTANT, answer, knowledge.citations)]);
-      this.scrollConversationToBottom(this.quickScroller);
+      const outcome: StreamOutcome =
+        await this.runStream(STREAM_QUICK, handle, apiMessages, knowledge.citations, this.quickScroller);
+      if (outcome.text.length > 0) {
+        this.quickMessages = this.quickMessages.concat([
+          new ChatMessage(ChatRole.ASSISTANT, this.finalAnswer(outcome, knowledge.citations), knowledge.citations)
+        ]);
+        this.scrollConversationToBottom(this.quickScroller);
+      }
     } catch (error) {
       this.quickError = this.errorMessage(error);
     } finally {
       this.isQuickSending = false;
+      if (this.streamHandles[STREAM_QUICK] === handle) {
+        this.streamHandles[STREAM_QUICK] = undefined;
+      }
+      this.recordQuickSession();
+      this.schedulePersist();
     }
   }
 
@@ -438,9 +1049,13 @@ struct Index {
     this.caseMessageController.stopEditing();
     this.caseError = '';
     this.isCaseSending = true;
+    const handle: StreamHandle = this.beginStream(STREAM_CASE);
     try {
       const knowledge: KnowledgeResult =
-        KnowledgeService.search(prompt + '\n' + attachment.text.substring(0, 2000));
+        await KnowledgeService.search(prompt + '\n' + attachment.text.substring(0, 2000));
+      if (handle.cancelled) {
+        return;
+      }
       const displayPrompt: string = attachment.name.length > 0 ?
         prompt + '\n附件：' + attachment.name : prompt;
       const apiPrompt: string = this.attachmentPrompt(prompt, attachment);
@@ -452,16 +1067,23 @@ struct Index {
       this.scrollConversationToBottom(this.caseScroller);
       const apiMessages: ChatMessage[] =
         this.conversationMessages(this.caseSystemPrompt(knowledge), this.caseMessages);
-      const rawAnswer: string = await AiApiClient.send(this.currentConfig(), apiMessages);
-      const answer: string = KnowledgeService.validateAnswer(rawAnswer, knowledge.citations);
-      this.caseMessages =
-        this.caseMessages.concat([new ChatMessage(ChatRole.ASSISTANT, answer, knowledge.citations)]);
-      this.scrollConversationToBottom(this.caseScroller);
+      const outcome: StreamOutcome =
+        await this.runStream(STREAM_CASE, handle, apiMessages, knowledge.citations, this.caseScroller);
+      if (outcome.text.length > 0) {
+        this.caseMessages = this.caseMessages.concat([
+          new ChatMessage(ChatRole.ASSISTANT, this.finalAnswer(outcome, knowledge.citations), knowledge.citations)
+        ]);
+        this.scrollConversationToBottom(this.caseScroller);
+      }
     } catch (error) {
       this.caseError = this.errorMessage(error);
       this.scrollConversationToBottom(this.caseScroller);
     } finally {
       this.isCaseSending = false;
+      if (this.streamHandles[STREAM_CASE] === handle) {
+        this.streamHandles[STREAM_CASE] = undefined;
+      }
+      this.schedulePersist();
     }
   }
 
@@ -564,6 +1186,109 @@ struct Index {
     this.sheetKind = 3;
   }
 
+  // Icon badges use a light tint in light mode, matching the scenario cards.
+  private badgeBackground(): ResourceColor {
+    return this.isDark ? this.cx.brand : this.cx.tint;
+  }
+
+  private badgeIconColor(): ResourceColor {
+    return this.isDark ? this.cx.onBrand : this.cx.brand;
+  }
+
+  private answerSegments(content: string, citations: LawCitation[]): AnswerSegment[] {
+    return CitationText.split(content, citations.length);
+  }
+
+  private citationChipBg(): string {
+    return this.isDark ? '#2A2416' : '#F6EAD2';
+  }
+
+  private isCitationActive(content: string, index: number): boolean {
+    return this.sheetKind === SHEET_CITATION && this.detailIndex === index && this.detailContent === content;
+  }
+
+  private openCitationDetail(content: string, citations: LawCitation[], index: number): void {
+    if (index < 0 || index >= citations.length) {
+      return;
+    }
+    this.quickQuestionController.stopEditing();
+    this.caseMessageController.stopEditing();
+    this.detailReturnSheet = this.sheetKind === 4 ? 4 : 0;
+    this.detailLeads = CitationText.leads(content, citations.length);
+    this.detailCitations = citations;
+    this.detailContent = content;
+    this.detailIndex = index;
+    this.sheetKind = SHEET_CITATION;
+  }
+
+  private closeCitationDetail(): void {
+    this.sheetKind = this.detailReturnSheet;
+    this.detailReturnSheet = 0;
+  }
+
+  private stepCitation(delta: number): void {
+    const next: number = this.detailIndex + delta;
+    if (next >= 0 && next < this.detailCitations.length) {
+      this.detailIndex = next;
+    }
+  }
+
+  private detailCitation(): LawCitation | undefined {
+    return this.detailIndex < this.detailCitations.length ? this.detailCitations[this.detailIndex] : undefined;
+  }
+
+  private detailHighlight(): HighlightRange | undefined {
+    const citation: LawCitation | undefined = this.detailCitation();
+    if (citation === undefined || this.detailIndex >= this.detailLeads.length) {
+      return undefined;
+    }
+    return CitationText.highlight(citation.excerpt, this.detailLeads[this.detailIndex]);
+  }
+
+  private statusLabel(status: string): string {
+    if (status.includes('失效') || status.includes('废止')) {
+      return status.includes('部分') ? '部分失效' : '已失效';
+    }
+    if (status.includes('尚未生效')) {
+      return '尚未生效';
+    }
+    if (status.includes('修订')) {
+      return '已被修订';
+    }
+    if (status.includes('现行有效')) {
+      return '现行有效';
+    }
+    return '效力未标注';
+  }
+
+  private statusColor(status: string): ResourceColor {
+    const label: string = this.statusLabel(status);
+    if (label === '现行有效') {
+      return this.cx.ok;
+    }
+    if (label === '已失效' || label === '部分失效') {
+      return this.cx.danger;
+    }
+    if (label === '效力未标注') {
+      return this.cx.muted;
+    }
+    return this.cx.warn;
+  }
+
+  private statusBg(status: string): ResourceColor {
+    const label: string = this.statusLabel(status);
+    if (label === '现行有效') {
+      return this.cx.okBg;
+    }
+    if (label === '已失效' || label === '部分失效') {
+      return this.cx.dangerBg;
+    }
+    if (label === '效力未标注') {
+      return this.cx.tint;
+    }
+    return this.isDark ? '#2A2416' : '#F6E9CE';
+  }
+
   private openReportSheet(): void {
     if (this.caseProgress < 60) {
       return;
@@ -603,18 +1328,28 @@ struct Index {
     this.isReportSending = true;
     this.reportError = '';
     this.reportStage = 1;
+    const handle: StreamHandle = this.beginStream(STREAM_REPORT);
     try {
       const summary: string = this.dossierSummary();
       this.reportStage = 2;
-      const knowledge: KnowledgeResult = KnowledgeService.search(summary);
+      const knowledge: KnowledgeResult = await KnowledgeService.search(summary);
+      if (handle.cancelled) {
+        this.reportStage = this.dossierReport.length > 0 ? 4 : 0;
+        return;
+      }
       const messages: ChatMessage[] = [
         new ChatMessage(ChatRole.SYSTEM, this.caseSystemPrompt(knowledge)
           + '请根据卷宗生成一份简明分析，包含：事实摘要、待确认信息、初步风险、证据建议、行动步骤。'),
         new ChatMessage(ChatRole.USER, summary)
       ];
       this.reportStage = 3;
-      const rawAnswer: string = await AiApiClient.send(this.currentConfig(), messages);
-      this.dossierReport = KnowledgeService.validateAnswer(rawAnswer, knowledge.citations);
+      const outcome: StreamOutcome =
+        await this.runStream(STREAM_REPORT, handle, messages, knowledge.citations, undefined);
+      if (outcome.text.length === 0) {
+        this.reportStage = this.dossierReport.length > 0 ? 4 : 0;
+        return;
+      }
+      this.dossierReport = this.finalAnswer(outcome, knowledge.citations);
       this.reportCitations = knowledge.citations;
       this.reportStage = 4;
     } catch (error) {
@@ -622,6 +1357,10 @@ struct Index {
       this.reportStage = 0;
     } finally {
       this.isReportSending = false;
+      if (this.streamHandles[STREAM_REPORT] === handle) {
+        this.streamHandles[STREAM_REPORT] = undefined;
+      }
+      this.schedulePersist();
     }
   }
 
@@ -708,12 +1447,15 @@ struct Index {
       return;
     }
     this.quickQuestionController.stopEditing();
+    this.recordQuickSession();
+    this.quickSessionId = '';
     this.question = '';
     this.quickMessages = [];
     this.quickError = '';
     this.quickAttachment = new FileAttachment();
     this.quickAttachmentError = '';
     this.headerProgress = 0;
+    this.schedulePersist();
   }
 
   private updateHeaderForScroll(scroller: Scroller): void {
@@ -815,28 +1557,48 @@ struct Index {
   }
 
   @Builder
-  private Icon(res: Resource, size: number, color: ResourceColor) {
-    Image(res)
-      .width(size)
-      .height(size)
-      .fillColor(color)
+  // Takes a single object literal so it is passed by reference: theme colors
+  // then refresh live instead of staying at the values from first render.
+  private Icon(icon: IconParams) {
+    Image(icon.res)
+      .width(icon.size)
+      .height(icon.size)
+      .fillColor(icon.color)
       .draggable(false)
   }
 
+
+  // Room the collapsed title leaves for the header actions on the 普法 page.
+  private headerActionsWidth(): number {
+    if (this.currentSection !== AppSection.QUICK) {
+      return 0;
+    }
+    return this.quickMessages.length > 0 ? 94 : 46;
+  }
+
   @Builder
-  private QuickHomeButton() {
-    Button({ type: ButtonType.Circle, stateEffect: true }) {
-      this.Icon($r('app.media.ic_home'), 18, this.cx.gold)
+  private GlassIconButton(res: Resource, label: string, action: number) {
+    Column() {
+      this.Icon({ res: res, size: 19, color: this.cx.gold })
     }
     .width(40)
     .height(40)
-    .backgroundColor(this.cx.navActiveBg)
+    .justifyContent(FlexAlign.Center)
+    .borderRadius(20)
+    .backgroundColor(this.isDark ? '#661C2A44' : '#59FFFFFF')
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THIN)
     .border({ width: 1, color: this.cx.navBorder })
     .shadow({ radius: 14, color: this.cx.navShadow, offsetY: 3 })
-    .enabled(!this.isQuickSending)
-    .accessibilityText('返回普法首页')
+    .visualEffect(this.light(LIGHT_BUTTON))
+    .enabled(action === 1 || !this.isQuickSending)
+    .opacity(action === 1 || !this.isQuickSending ? 1 : 0.5)
+    .accessibilityText(label)
     .onClick(() => {
-      this.returnToQuickHome();
+      if (action === 0) {
+        this.startNewConsultation();
+      } else {
+        this.openHistoryDrawer();
+      }
     })
   }
 
@@ -865,12 +1627,12 @@ struct Index {
           .fontSize(13)
           .fontColor(this.cx.headerSub)
           .height(20 * (1 - this.headerProgress))
-          .opacity(1 - this.headerProgress)
+          .opacity(Math.max(0, 1 - 2 * this.headerProgress))
           .margin({ top: 6 * (1 - this.headerProgress) })
         Row()
           .width(34)
           .height(3 * (1 - this.headerProgress))
-          .opacity(1 - this.headerProgress)
+          .opacity(Math.max(0, 1 - 2 * this.headerProgress))
           .backgroundColor(this.cx.glow)
           .borderRadius(2)
           .margin({ top: 12 * (1 - this.headerProgress) })
@@ -878,29 +1640,23 @@ struct Index {
       .alignItems(HorizontalAlign.Start)
       .width('100%')
       .height('100%')
-      .padding({ left: 22, right: 22, top: 54 - 2 * this.headerProgress, bottom: 18 })
+      .padding({
+        left: 22 + this.headerActionsWidth() * this.headerProgress,
+        right: 22,
+        top: 54 - 2 * this.headerProgress,
+        bottom: 18
+      })
 
-      if (this.currentSection === AppSection.QUICK && this.quickMessages.length > 0) {
-        Row() {
-          this.QuickHomeButton()
-          Blank()
+      if (this.currentSection === AppSection.QUICK) {
+        // One set of actions that glides from under the gold accent line
+        // (expanded) to in front of the title (collapsed).
+        Row({ space: 8 }) {
+          this.GlassIconButton($r('app.media.ic_menu'), '历史咨询', 1)
+          if (this.quickMessages.length > 0) {
+            this.GlassIconButton($r('app.media.ic_home'), '返回普法首页', 0)
+          }
         }
-        .width('100%')
-        .height('100%')
-        .alignItems(VerticalAlign.Top)
-        .padding({ top: 132, left: 22 })
-        .opacity(1 - this.headerProgress)
-        .enabled(this.headerProgress < 0.5)
-        Row() {
-          Blank()
-          this.QuickHomeButton()
-        }
-        .width('100%')
-        .height('100%')
-        .alignItems(VerticalAlign.Top)
-        .padding({ top: 46, right: 22 })
-        .opacity(this.headerProgress)
-        .enabled(this.headerProgress >= 0.5)
+        .position({ x: 22 - 6 * this.headerProgress, y: 138 - 92 * this.headerProgress })
       }
     }
     .width('100%')
@@ -938,7 +1694,7 @@ struct Index {
   @Builder
   private TrustChip(res: Resource, label: string) {
     Row({ space: 5 }) {
-      this.Icon(res, 12, this.cx.brand)
+      this.Icon({ res: res, size: 12, color: this.cx.brand })
       Text(label)
         .fontSize(10.5)
         .fontWeight(FontWeight.Medium)
@@ -989,14 +1745,33 @@ struct Index {
     } else {
       Row({ space: 8 }) {
         Column() {
-          this.Icon($r('app.media.ic_scale'), 16, this.cx.glow)
+          this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
         }
         .width(28)
         .height(28)
         .justifyContent(FlexAlign.Center)
         .backgroundColor(this.cx.brandStrong)
         .borderRadius(9)
-        Text(message.content)
+        Text() {
+  ForEach(this.answerSegments(message.content, message.citations), (segment: AnswerSegment) => {
+            if (segment.citationIndex < 0) {
+              Span(segment.text)
+            } else {
+              Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(this.isCitationActive(message.content, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
+                .textBackgroundStyle({
+                  color: this.isCitationActive(message.content, segment.citationIndex) ? this.cx.gold : this.citationChipBg(),
+                  radius: 8
+                })
+                .onClick(() => {
+                  this.openCitationDetail(message.content, message.citations, segment.citationIndex);
+                })
+            }
+          }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
+            + '_' + segment.text.length.toString())
+        }
           .fontSize(15)
           .lineHeight(24)
           .fontColor(this.cx.text)
@@ -1015,7 +1790,7 @@ struct Index {
   private CitationItem(citation: LawCitation, expanded: boolean = false) {
     Column() {
       Row({ space: 6 }) {
-        Text(citation.id)
+        Text(citation.id.startsWith('K') ? citation.id.substring(1) : citation.id)
           .fontSize(10)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.cx.onBrand)
@@ -1066,7 +1841,7 @@ struct Index {
     if (citations.length > 0) {
       Column({ space: 8 }) {
         Row({ space: 6 }) {
-          this.Icon($r('app.media.ic_book'), 14, this.cx.brand)
+          this.Icon({ res: $r('app.media.ic_book'), size: 14, color: this.cx.brand })
           Text('本轮检索依据')
             .fontSize(13)
             .fontWeight(FontWeight.Bold)
@@ -1102,6 +1877,151 @@ struct Index {
   }
 
   @Builder
+  private CitationStepButton(label: string, delta: number) {
+    Text(label)
+      .fontSize(20)
+      .fontColor(this.detailIndex + delta >= 0 && this.detailIndex + delta < this.detailCitations.length ?
+        this.cx.gold : this.cx.faint)
+      .textAlign(TextAlign.Center)
+      .width(34)
+      .height(34)
+      .backgroundColor(this.cx.tint)
+      .borderRadius(17)
+      .accessibilityText(delta < 0 ? '上一条依据' : '下一条依据')
+      .onClick(() => {
+        this.stepCitation(delta);
+      })
+  }
+
+  @Builder
+  private CitationDetailHeader() {
+    Row({ space: 8 }) {
+      Text('依据 ' + (this.detailIndex + 1).toString())
+        .fontSize(13)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.cx.onGold)
+        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+        .backgroundColor(this.cx.gold)
+        .borderRadius(999)
+      Text('共 ' + this.detailCitations.length.toString() + ' 条')
+        .fontSize(12)
+        .fontColor(this.cx.muted)
+      Blank()
+      this.CitationStepButton('‹', -1)
+      this.CitationStepButton('›', 1)
+      Button('关闭')
+        .fontSize(12)
+        .fontColor(this.cx.brand)
+        .height(34)
+        .backgroundColor(this.cx.tint)
+        .borderRadius(10)
+        .margin({ left: 4 })
+        .onClick(() => {
+          this.closeCitationDetail();
+        })
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private CitationDetailBody() {
+    if (this.detailCitation() !== undefined) {
+      Column({ space: 12 }) {
+        Column({ space: 4 }) {
+          Text(this.detailCitation()!.title)
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.cx.text)
+            .width('100%')
+          if (this.detailCitation()!.article.length > 0) {
+            Text(this.detailCitation()!.article)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.cx.gold)
+          }
+        }
+        .alignItems(HorizontalAlign.Start)
+        .width('100%')
+        Row({ space: 6 }) {
+          Text(this.statusLabel(this.detailCitation()!.status))
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.statusColor(this.detailCitation()!.status))
+            .padding({ left: 9, right: 9, top: 3, bottom: 3 })
+            .backgroundColor(this.statusBg(this.detailCitation()!.status))
+            .borderRadius(999)
+          if (this.detailCitation()!.effectiveDate.length > 0) {
+            Text(this.detailCitation()!.effectiveDate + ' 施行')
+              .fontSize(11)
+              .fontColor(this.cx.muted)
+              .padding({ left: 9, right: 9, top: 3, bottom: 3 })
+              .backgroundColor(this.cx.tint)
+              .borderRadius(999)
+          }
+        }
+        .width('100%')
+        Scroll() {
+          if (this.detailHighlight() !== undefined) {
+            Text() {
+              Span(this.detailCitation()!.excerpt.substring(0, this.detailHighlight()!.start))
+              Span(this.detailCitation()!.excerpt.substring(this.detailHighlight()!.start,
+                this.detailHighlight()!.end))
+                .fontColor(this.cx.text)
+                .fontWeight(FontWeight.Medium)
+                .textBackgroundStyle({ color: this.isDark ? '#33E0B45C' : '#33C0842A', radius: 4 })
+              Span(this.detailCitation()!.excerpt.substring(this.detailHighlight()!.end))
+            }
+            .fontSize(14)
+            .lineHeight(23)
+            .fontColor(this.cx.muted)
+            .width('100%')
+          } else {
+            Text(this.detailCitation()!.excerpt)
+              .fontSize(14)
+              .lineHeight(23)
+              .fontColor(this.cx.muted)
+              .width('100%')
+          }
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .padding(14)
+        .align(Alignment.TopStart)
+        .backgroundColor(this.cx.surface)
+        .borderRadius(14)
+        .border({ width: 1, color: this.cx.line })
+        .scrollBar(BarState.Auto)
+        Row({ space: 6 }) {
+          this.Icon({ res: $r('app.media.ic_doc'), size: 13, color: this.cx.faint })
+          Text(this.detailCitation()!.source)
+            .fontSize(11)
+            .fontColor(this.cx.faint)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+          Text('全部依据 ›')
+            .fontSize(12)
+            .fontColor(this.cx.brand)
+            .padding({ left: 8, top: 4, bottom: 4 })
+            .onClick(() => {
+              this.sheetCitations = this.detailCitations;
+              this.detailReturnSheet = 0;
+              this.sheetKind = 3;
+            })
+        }
+        .width('100%')
+        Text('资料为机械收录，尚未完成全面法律效力审查，请以官方最新文本为准。')
+          .fontSize(10.5)
+          .lineHeight(15)
+          .fontColor(this.cx.faint)
+          .width('100%')
+      }
+      .layoutWeight(1)
+      .width('100%')
+    }
+  }
+
+  @Builder
   private ReportStageRow(label: string, stage: number) {
     Row({ space: 10 }) {
       Text(this.reportStage > stage ? '✓' : stage.toString())
@@ -1131,34 +2051,40 @@ struct Index {
   @Builder
   private UnifiedSheet() {
     Column({ space: 16 }) {
-      Row() {
-        Column({ space: 4 }) {
-          Text(this.sheetKind === 3 ? '本轮检索依据' :
-            this.sheetKind === 4 ? '案件分析报告' : '添加咨询材料')
-            .fontSize(19)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.cx.text)
-          Text(this.sheetKind === 3 ?
-            this.sheetCitations.length.toString() + ' 条本地法规片段' :
-            this.sheetKind === 4 ? '整理事实、检索依据，再生成报告' : '由你主动选择要分析的文件')
+      if (this.sheetKind === SHEET_CITATION) {
+        this.CitationDetailHeader()
+      } else {
+        Row() {
+          Column({ space: 4 }) {
+            Text(this.sheetKind === 3 ? '本轮检索依据' :
+              this.sheetKind === 4 ? '案件分析报告' : '添加咨询材料')
+              .fontSize(19)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.cx.text)
+            Text(this.sheetKind === 3 ?
+              this.sheetCitations.length.toString() + ' 条本地法规片段' :
+              this.sheetKind === 4 ? '整理事实、检索依据，再生成报告' : '由你主动选择要分析的文件')
+              .fontSize(12)
+              .fontColor(this.cx.muted)
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          Button('关闭')
             .fontSize(12)
-            .fontColor(this.cx.muted)
+            .fontColor(this.cx.brand)
+            .height(34)
+            .backgroundColor(this.cx.tint)
+            .borderRadius(10)
+            .onClick(() => {
+              this.sheetKind = 0;
+            })
         }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-        Button('关闭')
-          .fontSize(12)
-          .fontColor(this.cx.brand)
-          .height(34)
-          .backgroundColor(this.cx.tint)
-          .borderRadius(10)
-          .onClick(() => {
-            this.sheetKind = 0;
-          })
+        .width('100%')
       }
-      .width('100%')
 
-      if (this.sheetKind === 3) {
+      if (this.sheetKind === SHEET_CITATION) {
+        this.CitationDetailBody()
+      } else if (this.sheetKind === 3) {
         Scroll() {
           Column({ space: 10 }) {
             ForEach(this.sheetCitations, (citation: LawCitation) => {
@@ -1194,15 +2120,34 @@ struct Index {
               .fontColor(this.cx.danger)
               .width('100%')
           }
-          if (this.dossierReport.length > 0) {
+          if (this.reportStreaming.length > 0 || this.dossierReport.length > 0) {
             Scroll() {
               Column({ space: 12 }) {
-                Text(this.dossierReport)
+                Text() {
+        ForEach(this.answerSegments(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations), (segment: AnswerSegment) => {
+                  if (segment.citationIndex < 0) {
+                    Span(segment.text)
+                  } else {
+                    Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+                      .fontSize(12)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor(this.isCitationActive(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
+                      .textBackgroundStyle({
+                        color: this.isCitationActive(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, segment.citationIndex) ? this.cx.gold : this.citationChipBg(),
+                        radius: 8
+                      })
+                      .onClick(() => {
+                        this.openCitationDetail(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations, segment.citationIndex);
+                      })
+                  }
+                }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
+                  + '_' + segment.text.length.toString())
+                }
                   .fontSize(15)
                   .lineHeight(24)
                   .fontColor(this.cx.text)
                   .width('100%')
-                if (this.reportCitations.length > 0) {
+                if (this.reportStreaming.length === 0 && this.reportCitations.length > 0) {
                   Button('查看 ' + this.reportCitations.length.toString() + ' 条法规依据')
                     .fontSize(13)
                     .fontColor(this.cx.brand)
@@ -1227,16 +2172,20 @@ struct Index {
               .fontColor(this.cx.muted)
               .width('100%')
           }
-          Button(this.dossierReport.length > 0 ? '重新生成报告' : '开始生成报告')
+          Button(this.isReportSending ? '停止生成' :
+            (this.dossierReport.length > 0 ? '重新生成报告' : '开始生成报告'))
             .width('100%')
             .height(48)
             .fontSize(15)
-            .fontColor(this.cx.onBrand)
-            .backgroundColor(this.cx.brand)
+            .fontColor(this.isReportSending ? this.cx.danger : this.cx.onBrand)
+            .backgroundColor(this.isReportSending ? this.cx.dangerBg : this.cx.brand)
             .borderRadius(15)
-            .enabled(!this.isReportSending)
             .onClick(() => {
-              this.generateReport();
+              if (this.isReportSending) {
+                this.stopStream(STREAM_REPORT);
+              } else {
+                this.generateReport();
+              }
             })
         }
         .width('100%')
@@ -1244,7 +2193,7 @@ struct Index {
       } else {
         Column({ space: 12 }) {
           Row({ space: 11 }) {
-            this.Icon($r('app.media.ic_doc'), 24, this.cx.brand)
+            this.Icon({ res: $r('app.media.ic_doc'), size: 24, color: this.cx.brand })
             Column({ space: 4 }) {
               Text('选择本机文件')
                 .fontSize(15)
@@ -1291,7 +2240,7 @@ struct Index {
   private AttachmentChip(attachment: FileAttachment, forCase: boolean) {
     Row() {
       Column() {
-        this.Icon($r('app.media.ic_doc'), 18, this.cx.brand)
+        this.Icon({ res: $r('app.media.ic_doc'), size: 18, color: this.cx.brand })
       }
       .width(34)
       .height(34)
@@ -1363,6 +2312,343 @@ struct Index {
   }
 
   @Builder
+  private HistoryDrawer() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.isDark ? '#99040B18' : '#66404A5A')
+        .opacity(this.drawerOpen ? 1 + this.drawerDrag / DRAWER_WIDTH : 0)
+        .accessibilityText('关闭历史咨询')
+        .onClick(() => {
+          this.closeHistoryDrawer();
+        })
+
+      Column() {
+        Row() {
+          Column({ space: 4 }) {
+            Text('历史咨询')
+              .fontSize(21)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.cx.text)
+            Row()
+              .width(28)
+              .height(3)
+              .backgroundColor(this.cx.glow)
+              .borderRadius(2)
+              .margin({ top: 4 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          Blank()
+          Text(this.quickHistory.length.toString() + ' 段')
+            .fontSize(11)
+            .fontColor(this.cx.muted)
+            .padding({ left: 9, right: 9, top: 4, bottom: 4 })
+            .backgroundColor(this.cx.tint)
+            .borderRadius(999)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+        .padding({ left: 20, right: 18 })
+
+        Row({ space: 8 }) {
+          this.Icon({ res: $r('app.media.ic_search'), size: 16, color: this.cx.faint })
+          TextInput({ text: this.historyQuery, placeholder: '搜索咨询记录', controller: this.historySearchController })
+            .layoutWeight(1)
+            .height(40)
+            .fontSize(14)
+            .fontColor(this.cx.text)
+            .placeholderColor(this.cx.placeholder)
+            .caretColor(this.cx.gold)
+            .backgroundColor(Color.Transparent)
+            .padding({ left: 0, right: 0 })
+            .onChange((value: string) => {
+              this.historyQuery = value;
+            })
+        }
+        .height(42)
+        .padding({ left: 13, right: 8 })
+        .backgroundColor(this.cx.inputBg)
+        .borderRadius(21)
+        .border({ width: 1, color: this.cx.line })
+        .margin({ left: 16, right: 16, top: 16 })
+
+        Column() {
+          Row({ space: 7 }) {
+            this.Icon({ res: $r('app.media.ic_compose'), size: 17, color: this.cx.onGold })
+            Text('新建咨询')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.cx.onGold)
+          }
+        }
+        .height(46)
+        .alignSelf(ItemAlign.Stretch)
+        .justifyContent(FlexAlign.Center)
+        .borderRadius(15)
+        .backgroundColor(this.cx.gold)
+        .shadow({ radius: 16, color: this.cx.navShadow, offsetY: 4 })
+        .visualEffect(this.light(LIGHT_BUTTON))
+        .margin({ left: 16, right: 16, top: 12 })
+        .opacity(this.isQuickSending ? 0.5 : 1)
+        .accessibilityText('新建咨询')
+        .onClick(() => {
+          this.startNewConsultation();
+        })
+
+        if (this.quickHistory.length === 0 || this.historyGroups().length === 0) {
+          Column({ space: 8 }) {
+            Column() {
+              this.Icon({ res: this.quickHistory.length === 0 ? $r('app.media.ic_clock') : $r('app.media.ic_search'), size: 22, color: this.cx.brand })
+            }
+            .width(48)
+            .height(48)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor(this.cx.tint)
+            .borderRadius(16)
+            Text(this.quickHistory.length === 0 ? '还没有咨询记录' : '没有找到相关咨询')
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.cx.text)
+            Text(this.quickHistory.length === 0 ? '每次问答结束后会自动保存在这里' : '换个关键词试试')
+              .fontSize(11.5)
+              .fontColor(this.cx.muted)
+          }
+          .layoutWeight(1)
+          .width('100%')
+          .justifyContent(FlexAlign.Center)
+        } else {
+          List({ space: 4 }) {
+            ForEach(this.historyGroups(), (group: HistoryGroup) => {
+              ListItemGroup({ header: this.HistoryGroupHeader(group.label) }) {
+                ForEach(group.sessions, (session: QuickSession) => {
+                  ListItem() {
+                    this.DrawerSessionRow(session)
+                  }
+                  .swipeAction({
+                    end: {
+                      builder: () => {
+                        this.DrawerDeleteAction(session.id)
+                      }
+                    }
+                  })
+                }, (session: QuickSession) => session.id + '_' + session.updatedAt.toString())
+              }
+            }, (group: HistoryGroup) => group.label + '_' + group.sessions.length.toString())
+          }
+          .layoutWeight(1)
+          .width('100%')
+          .padding({ left: 10, right: 10 })
+          .margin({ top: 8 })
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
+        }
+
+        Row({ space: 6 }) {
+          this.Icon({ res: $r('app.media.ic_shield'), size: 12, color: this.cx.ok })
+          Text('仅保存在本机 · ' + this.quickHistory.length.toString() + ' / '
+            + MAX_QUICK_SESSIONS.toString() + ' 段')
+            .fontSize(11)
+            .fontColor(this.cx.muted)
+          Blank()
+          Text('左滑可删除')
+            .fontSize(11)
+            .fontColor(this.cx.faint)
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 12 })
+        .border({ width: { top: 1 }, color: this.cx.line })
+      }
+      .width('84%')
+      .constraintSize({ maxWidth: DRAWER_WIDTH })
+      .height('100%')
+      .padding({ top: 56, bottom: 30 })
+      .borderRadius({ topRight: 26, bottomRight: 26 })
+      .backgroundColor(this.isDark ? '#E60E1B30' : '#EBF7F9FC')
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+      .border({ width: { right: 1 }, color: this.cx.line })
+      .shadow({ radius: 30, color: this.cx.softShadow, offsetX: 6 })
+      .visualEffect(this.light(LIGHT_PANEL))
+      .overlay(this.DrawerGlow())
+      .onTouch((event: TouchEvent) => {
+        this.trackDrawerGlow(event);
+      })
+      .translate({ x: this.drawerOpen ? this.drawerDrag : -(DRAWER_WIDTH + 40) })
+      .gesture(
+        PanGesture({ direction: PanDirection.Horizontal, distance: 8 })
+          .onActionUpdate((event: GestureEvent) => {
+            this.drawerDrag = Math.min(0, event.offsetX);
+          })
+          .onActionEnd((event: GestureEvent) => {
+            this.settleDrawerDrag(event.velocityX);
+          })
+      )
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  private DrawerGlow() {
+    Column()
+      .width(260)
+      .height(260)
+      .radialGradient({
+        center: [130, 130],
+        radius: 130,
+        colors: [
+          [this.isDark ? '#40E7BE6A' : '#33E8B85C', 0.0],
+          [this.isDark ? '#14E7BE6A' : '#10E8B85C', 0.45],
+          ['#00E7BE6A', 1.0]
+        ]
+      })
+      .position({ x: this.drawerGlowX - 130, y: this.drawerGlowY - 130 })
+      .opacity(this.drawerGlowOn ? 1 : 0)
+      .scale({ x: this.drawerGlowOn ? 1 : 0.7, y: this.drawerGlowOn ? 1 : 0.7 })
+      .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
+  private HistoryGroupHeader(label: string) {
+    Text(label)
+      .fontSize(11.5)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.cx.faint)
+      .width('100%')
+      .padding({ left: 10, top: 12, bottom: 6 })
+  }
+
+  @Builder
+  private DrawerSessionRow(session: QuickSession) {
+    if (this.isActiveSession(session)) {
+      Column({ space: 4 }) {
+        this.DrawerSessionText(session)
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .borderRadius(14)
+      .backgroundColor(this.pressedSessionId === session.id ? this.cx.surface2 : this.cx.tint)
+      .border({ width: 1, color: this.isDark ? '#4DE0B45C' : '#40C0842A' })
+      .onTouch((event: TouchEvent) => {
+        this.trackRowPress(session.id, event);
+      })
+      .onClick(() => {
+        this.closeHistoryDrawer();
+      })
+    } else {
+      Column({ space: 4 }) {
+        this.DrawerSessionText(session)
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .borderRadius(14)
+      .backgroundColor(this.pressedSessionId === session.id ? this.cx.tint : Color.Transparent)
+      .onTouch((event: TouchEvent) => {
+        this.trackRowPress(session.id, event);
+      })
+      .onClick(() => {
+        this.openSessionFromDrawer(session);
+      })
+    }
+  }
+
+  @Builder
+  private DrawerSessionText(session: QuickSession) {
+    Text(session.title)
+      .fontSize(14)
+      .fontWeight(this.isActiveSession(session) ? FontWeight.Bold : FontWeight.Medium)
+      .fontColor(this.cx.text)
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .width('100%')
+    Text(this.sessionMeta(session))
+      .fontSize(11)
+      .fontColor(this.isActiveSession(session) ? this.cx.goldDeep : this.cx.muted)
+      .width('100%')
+  }
+
+  @Builder
+  private DrawerDeleteAction(id: string) {
+    Column() {
+      Text('删除')
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.cx.danger)
+    }
+    .width(72)
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(this.cx.dangerBg)
+    .borderRadius(14)
+    .margin({ left: 6 })
+    .onClick(() => {
+      this.deleteQuickSession(id);
+    })
+  }
+
+  @Builder
+  private StreamingBubble(kind: number) {
+    Row({ space: 8 }) {
+      Column() {
+        this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
+      }
+      .width(28)
+      .height(28)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.cx.brandStrong)
+      .borderRadius(9)
+      Text() {
+ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, kind === STREAM_CASE ? this.caseStreamCitations : this.quickStreamCitations), (segment: AnswerSegment) => {
+          if (segment.citationIndex < 0) {
+            Span(segment.text)
+          } else {
+            Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.isCitationActive(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
+              .textBackgroundStyle({
+                color: this.isCitationActive(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, segment.citationIndex) ? this.cx.gold : this.citationChipBg(),
+                radius: 8
+              })
+              .onClick(() => {
+                this.openCitationDetail(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, kind === STREAM_CASE ? this.caseStreamCitations : this.quickStreamCitations, segment.citationIndex);
+              })
+          }
+        }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
+          + '_' + segment.text.length.toString())
+      }
+        .fontSize(15)
+        .lineHeight(24)
+        .fontColor(this.cx.text)
+        .layoutWeight(1)
+        .padding(13)
+        .backgroundColor(this.cx.surface)
+        .borderRadius({ topLeft: 6, topRight: 18, bottomLeft: 18, bottomRight: 18 })
+        .border({ width: 1, color: this.cx.line })
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  private StopButton(kind: number) {
+    Row() {
+      Button('停止生成')
+        .fontSize(12)
+        .fontColor(this.cx.danger)
+        .height(32)
+        .padding({ left: 14, right: 14 })
+        .backgroundColor(this.cx.dangerBg)
+        .borderRadius(10)
+        .onClick(() => {
+          this.stopStream(kind);
+        })
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
   private ErrorHint(message: string) {
     Row() {
       Text(message)
@@ -1391,7 +2677,7 @@ struct Index {
     Column() {
       Row() {
         Column() {
-          this.Icon(this.scenarioIcon(index), 17, this.scenarioGold(index) ? this.cx.gold : this.cx.brand)
+          this.Icon({ res: this.scenarioIcon(index), size: 17, color: this.scenarioGold(index) ? this.cx.gold : this.cx.brand })
         }
         .width(34)
         .height(34)
@@ -1400,7 +2686,7 @@ struct Index {
           (this.isDark ? '#2A2416' : '#F6EAD2') : this.cx.tint)
         .borderRadius(10)
         Blank()
-        this.Icon($r('app.media.ic_send'), 13, this.cx.faint)
+        this.Icon({ res: $r('app.media.ic_send'), size: 13, color: this.cx.faint })
       }
       .width('100%')
       Text(item.title)
@@ -1431,12 +2717,12 @@ struct Index {
   private KnowledgePanel() {
     Row() {
       Column() {
-        this.Icon($r('app.media.ic_book'), 22, this.cx.onBrand)
+        this.Icon({ res: $r('app.media.ic_book'), size: 22, color: this.badgeIconColor() })
       }
       .width(46)
       .height(46)
       .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.cx.brand)
+      .backgroundColor(this.badgeBackground())
       .borderRadius(15)
       .shadow({ radius: 12, color: this.cx.cardShadow, offsetY: 4 })
       Column() {
@@ -1459,7 +2745,7 @@ struct Index {
       .layoutWeight(1)
       .margin({ left: 12 })
       Column() {
-        this.Icon($r('app.media.ic_check'), 15, this.cx.ok)
+        this.Icon({ res: $r('app.media.ic_check'), size: 15, color: this.cx.ok })
       }
       .width(30)
       .height(30)
@@ -1481,12 +2767,12 @@ struct Index {
       if (!compact) {
         Row({ space: 9 }) {
           Column() {
-            this.Icon($r('app.media.ic_consult'), 16, this.cx.onBrand)
+            this.Icon({ res: $r('app.media.ic_consult'), size: 16, color: this.badgeIconColor() })
           }
           .width(30)
           .height(30)
           .justifyContent(FlexAlign.Center)
-          .backgroundColor(this.cx.brand)
+          .backgroundColor(this.badgeBackground())
           .borderRadius(10)
           Text('先把情况告诉我')
             .fontSize(17)
@@ -1501,7 +2787,7 @@ struct Index {
       }
       Row({ space: 8 }) {
         Button({ type: ButtonType.Circle, stateEffect: true }) {
-          this.Icon($r('app.media.ic_plus'), 18, this.cx.gold)
+          this.Icon({ res: $r('app.media.ic_plus'), size: 18, color: this.cx.gold })
         }
         .width(42)
         .height(42)
@@ -1531,7 +2817,7 @@ struct Index {
             this.question = value;
           })
         Button({ type: ButtonType.Circle, stateEffect: true }) {
-          this.Icon($r('app.media.ic_send'), 18, this.cx.onGold)
+          this.Icon({ res: $r('app.media.ic_send'), size: 18, color: this.cx.onGold })
         }
         .width(42)
         .height(42)
@@ -1548,7 +2834,7 @@ struct Index {
       .borderRadius(26)
       .border({ width: 1, color: this.cx.line })
       Row({ space: 5 }) {
-        this.Icon($r('app.media.ic_book'), 11, this.cx.ok)
+        this.Icon({ res: $r('app.media.ic_book'), size: 11, color: this.cx.ok })
         Text('本地法规检索 已开启')
           .fontSize(10)
           .fontColor(this.cx.ok)
@@ -1618,7 +2904,12 @@ struct Index {
               .transition(TransitionEffect.OPACITY.animation({ duration: this.reduceMotion ? 0 : 160 }))
             })
             if (this.isQuickSending) {
-              this.SendingIndicator('正在检索本地法规并作答…')
+              if (this.quickStreaming.length > 0) {
+                this.StreamingBubble(STREAM_QUICK)
+              } else {
+                this.SendingIndicator('正在检索本地法规并作答…')
+              }
+              this.StopButton(STREAM_QUICK)
             }
           }
           .width('100%')
@@ -1639,6 +2930,21 @@ struct Index {
     .onDidScroll(() => {
       this.updateHeaderForScroll(this.quickScroller);
     })
+    .gesture(
+      PanGesture({ direction: PanDirection.Right, distance: 12 })
+        .onActionStart(() => {
+          this.beginDrawerSwipe();
+        })
+        .onActionUpdate((event: GestureEvent) => {
+          this.updateDrawerSwipe(event.offsetX);
+        })
+        .onActionEnd((event: GestureEvent) => {
+          this.endDrawerSwipe(event.offsetX, event.velocityX);
+        })
+        .onActionCancel(() => {
+          this.endDrawerSwipe(0, 0);
+        })
+    )
   }
 
   @Builder
@@ -1716,7 +3022,7 @@ struct Index {
 
         Button() {
           Row({ space: 9 }) {
-            this.Icon($r('app.media.ic_doc'), 18, this.cx.goldDeep)
+            this.Icon({ res: $r('app.media.ic_doc'), size: 18, color: this.cx.goldDeep })
             Column({ space: 3 }) {
               Text(this.checklistFloatBusy ?
                 (this.checklistFloatActive ? '正在关闭闪控窗…' : '正在开启闪控窗…') :
@@ -1752,7 +3058,7 @@ struct Index {
 
         Row({ space: 8 }) {
           Column() {
-            this.Icon($r('app.media.ic_scale'), 16, this.cx.glow)
+            this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
           }
           .width(28)
           .height(28)
@@ -1785,7 +3091,12 @@ struct Index {
               .transition(TransitionEffect.OPACITY.animation({ duration: this.reduceMotion ? 0 : 160 }))
             })
             if (this.isCaseSending) {
-              this.SendingIndicator('正在梳理案件信息…')
+              if (this.caseStreaming.length > 0) {
+                this.StreamingBubble(STREAM_CASE)
+              } else {
+                this.SendingIndicator('正在梳理案件信息…')
+              }
+              this.StopButton(STREAM_CASE)
             }
           }
           .width('100%')
@@ -1819,7 +3130,7 @@ struct Index {
           Row({ space: 10 }) {
             Button() {
               Row({ space: 6 }) {
-                this.Icon($r('app.media.ic_plus'), 15, this.cx.brand)
+                this.Icon({ res: $r('app.media.ic_plus'), size: 15, color: this.cx.brand })
                 Text('案件材料')
                   .fontSize(13)
                   .fontWeight(FontWeight.Medium)
@@ -1841,7 +3152,7 @@ struct Index {
                   .fontSize(14)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.cx.onBrand)
-                this.Icon($r('app.media.ic_send'), 15, this.cx.onBrand)
+                this.Icon({ res: $r('app.media.ic_send'), size: 15, color: this.cx.onBrand })
               }
             }
             .height(40)
@@ -1886,7 +3197,7 @@ struct Index {
           .fontWeight(FontWeight.Medium)
           .fontColor(this.cx.muted)
         if (this.fieldFilled(fieldIndex)) {
-          this.Icon($r('app.media.ic_check'), 12, this.cx.ok)
+          this.Icon({ res: $r('app.media.ic_check'), size: 12, color: this.cx.ok })
         }
       }
       .width('100%')
@@ -1904,6 +3215,7 @@ struct Index {
           .onChange((newValue: string) => {
             this.details = newValue;
             this.updateProgress();
+            this.schedulePersist();
           })
       } else {
         TextInput({ text: value, placeholder: hint, controller: this.fieldControllers[fieldIndex] })
@@ -1928,6 +3240,7 @@ struct Index {
               this.request = newValue;
             }
             this.updateProgress();
+            this.schedulePersist();
           })
       }
     }
@@ -1999,7 +3312,7 @@ struct Index {
 
         Button() {
           Row({ space: 8 }) {
-            this.Icon($r('app.media.ic_doc'), 16, this.caseProgress >= 60 ? this.cx.onBrand : this.cx.faint)
+            this.Icon({ res: $r('app.media.ic_doc'), size: 16, color: this.caseProgress >= 60 ? this.cx.onBrand : this.cx.faint })
             Text('生成案件分析报告')
               .fontSize(15)
               .fontWeight(FontWeight.Medium)
@@ -2015,28 +3328,50 @@ struct Index {
           this.openReportSheet();
         })
         if (this.isReportSending) {
-          this.SendingIndicator('正在生成案件分析报告…')
+          this.SendingIndicator(this.reportStreaming.length > 0 ? '正在生成案件分析报告…' : '正在准备案件分析报告…')
+          this.StopButton(STREAM_REPORT)
         }
         if (this.reportError.length > 0) {
           this.ErrorHint(this.reportError)
         }
-        if (this.dossierReport.length > 0) {
+        if (this.reportStreaming.length > 0 || this.dossierReport.length > 0) {
           Column() {
             Row({ space: 7 }) {
-              this.Icon($r('app.media.ic_doc'), 16, this.cx.brand)
+              this.Icon({ res: $r('app.media.ic_doc'), size: 16, color: this.cx.brand })
               Text('案件分析报告')
                 .fontSize(16)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.cx.brandStrong)
             }
             .width('100%')
-            Text(this.dossierReport)
+            Text() {
+    ForEach(this.answerSegments(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations), (segment: AnswerSegment) => {
+              if (segment.citationIndex < 0) {
+                Span(segment.text)
+              } else {
+                Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+                  .fontSize(12)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(this.isCitationActive(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
+                  .textBackgroundStyle({
+                    color: this.isCitationActive(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, segment.citationIndex) ? this.cx.gold : this.citationChipBg(),
+                    radius: 8
+                  })
+                  .onClick(() => {
+                    this.openCitationDetail(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations, segment.citationIndex);
+                  })
+              }
+            }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
+              + '_' + segment.text.length.toString())
+            }
               .fontSize(15)
               .lineHeight(24)
               .fontColor(this.cx.text)
               .width('100%')
               .margin({ top: 12 })
-            this.CitationPanel(this.reportCitations)
+            if (this.reportStreaming.length === 0) {
+              this.CitationPanel(this.reportCitations)
+            }
           }
           .alignItems(HorizontalAlign.Start)
           .width('100%')
@@ -2068,7 +3403,7 @@ struct Index {
   private SettingCardHeader(res: Resource, title: string) {
     Row({ space: 8 }) {
       Column() {
-        this.Icon(res, 15, this.cx.brand)
+        this.Icon({ res: res, size: 15, color: this.cx.brand })
       }
       .width(26)
       .height(26)
@@ -2182,7 +3517,7 @@ struct Index {
           this.SettingsInput('模型名称', this.modelName, '填写服务商提供的模型 ID', 1)
           this.SettingsInput('API Key', this.apiKey, '输入后将安全保存在本机', 2)
           Row({ space: 6 }) {
-            this.Icon($r('app.media.ic_shield'), 12, this.cx.ok)
+            this.Icon({ res: $r('app.media.ic_shield'), size: 12, color: this.cx.ok })
             Text('API Key 使用 Asset Store 加密保存于本机，不写入代码或同步')
               .fontSize(10.5)
               .lineHeight(15)
@@ -2232,6 +3567,35 @@ struct Index {
           this.SettingRow('可检索文档', this.knowledgeSearchableCount > 0 ?
             this.knowledgeSearchableCount.toString() + ' 份' : '—')
           this.SettingRow('检索方式', '仅本地 · 不联网')
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding(16)
+        .backgroundColor(this.cx.surface)
+        .borderRadius(18)
+        .border({ width: 1, color: this.cx.line })
+
+        Column({ space: 10 }) {
+          this.SettingCardHeader($r('app.media.ic_folder'), '本机记录')
+          this.SettingRow('普法咨询', this.quickHistory.length.toString() + ' 段历史')
+          this.SettingRow('案件对话', this.caseMessages.length.toString() + ' 条消息')
+          this.SettingRow('卷宗完整度', this.caseProgress.toString() + '%')
+          Text('对话和卷宗仅保存在本机应用沙箱中，重新打开应用后会自动恢复。')
+            .fontSize(10.5)
+            .lineHeight(15)
+            .fontColor(this.cx.muted)
+            .width('100%')
+          Button('清空本机记录')
+            .width('100%')
+            .height(42)
+            .fontSize(14)
+            .fontColor(this.cx.danger)
+            .backgroundColor(this.cx.dangerBg)
+            .borderRadius(13)
+            .enabled(!this.isQuickSending && !this.isCaseSending && !this.isReportSending)
+            .onClick(() => {
+              this.clearLocalRecords();
+            })
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
@@ -2308,8 +3672,7 @@ struct Index {
   @Builder
   private NavItem(res: Resource, label: string, target: AppSection) {
     Column({ space: 3 }) {
-      this.Icon(res, this.currentSection === target ? 22 : 21,
-        this.currentSection === target ? (this.isDark ? this.cx.gold : this.cx.goldDeep) : this.cx.muted)
+      this.Icon({ res: res, size: this.currentSection === target ? 22 : 21, color: this.currentSection === target ? (this.isDark ? this.cx.gold : this.cx.goldDeep) : this.cx.muted })
       Text(label)
         .fontSize(11)
         .fontWeight(this.currentSection === target ? FontWeight.Bold : FontWeight.Regular)
@@ -2333,60 +3696,71 @@ struct Index {
   }
 
   build() {
-    Column() {
-      this.Header()
-      HdsTabs({
-        barPosition: BarPosition.End,
-        index: this.currentSection,
-        controller: this.hdsTabsController
-      }) {
-        TabContent() {
-          this.QuickPage()
+    Stack() {
+      Column() {
+        this.Header()
+        HdsTabs({
+          barPosition: BarPosition.End,
+          index: this.currentSection,
+          controller: this.hdsTabsController
+        }) {
+          TabContent() {
+            this.QuickPage()
+          }
+          .tabBar(this.NavItem($r('app.media.ic_consult'), '普法', AppSection.QUICK))
+          TabContent() {
+            this.CaseChat()
+          }
+          .tabBar(this.NavItem($r('app.media.ic_scale'), '案件', AppSection.CASE))
+          TabContent() {
+            this.DossierPage()
+          }
+          .tabBar(this.NavItem($r('app.media.ic_folder'), '卷宗', AppSection.DOSSIER))
+          TabContent() {
+            this.SettingsPage()
+          }
+          .tabBar(this.NavItem($r('app.media.ic_gear'), '设置', AppSection.SETTINGS))
         }
-        .tabBar(this.NavItem($r('app.media.ic_consult'), '普法', AppSection.QUICK))
-        TabContent() {
-          this.CaseChat()
-        }
-        .tabBar(this.NavItem($r('app.media.ic_scale'), '案件', AppSection.CASE))
-        TabContent() {
-          this.DossierPage()
-        }
-        .tabBar(this.NavItem($r('app.media.ic_folder'), '卷宗', AppSection.DOSSIER))
-        TabContent() {
-          this.SettingsPage()
-        }
-        .tabBar(this.NavItem($r('app.media.ic_gear'), '设置', AppSection.SETTINGS))
+        .barMode(BarMode.Fixed)
+        .barHeight(this.keyboardVisible ? 0 : 64)
+        .barOverlap(true)
+        .barFloatingStyle(this.keyboardVisible ? this.keyboardHiddenStyle() : this.floatingStyle())
+        .divider({ mode: DividerMode.NONE })
+        .scrollable(false)
+        .animationDuration(220)
+        .onChange((index: number) => {
+          this.currentSection = index as AppSection;
+          this.headerProgress = 0;
+        })
+        .layoutWeight(1)
+        .width('100%')
       }
-      .barMode(BarMode.Fixed)
-      .barHeight(this.keyboardVisible ? 0 : 64)
-      .barOverlap(true)
-      .barFloatingStyle(this.keyboardVisible ? this.keyboardHiddenStyle() : this.floatingStyle())
-      .divider({ mode: DividerMode.NONE })
-      .scrollable(false)
-      .animationDuration(220)
-      .onChange((index: number) => {
-        this.currentSection = index as AppSection;
-        this.headerProgress = 0;
-      })
-      .layoutWeight(1)
       .width('100%')
+      .height('100%')
+      .linearGradient({
+        angle: 180,
+        colors: [[this.cx.bgTop, 0.0], [this.cx.bgBottom, 1.0]]
+      })
+      .bindSheet(this.sheetKind !== 0, this.UnifiedSheet(), {
+        height: this.sheetKind === 3 || this.sheetKind === 4 ? '72%' :
+        this.sheetKind === SHEET_CITATION ? '64%' : 290,
+        preferType: SheetType.BOTTOM,
+        dragBar: true,
+        showClose: false,
+        maskColor: this.isDark ? '#88040B18' : '#66404A5A',
+        systemMaterial: this.sheetMaterial(),
+        onWillDismiss: () => {
+          // Dismissing a citation opened from the report goes back to the report.
+          this.sheetKind = this.sheetKind === SHEET_CITATION ? this.detailReturnSheet : 0;
+          this.detailReturnSheet = 0;
+        }
+      })
+
+      if (this.drawerVisible) {
+        this.HistoryDrawer()
+      }
     }
     .width('100%')
     .height('100%')
-    .linearGradient({
-      angle: 180,
-      colors: [[this.cx.bgTop, 0.0], [this.cx.bgBottom, 1.0]]
-    })
-    .bindSheet(this.sheetKind !== 0, this.UnifiedSheet(), {
-      height: this.sheetKind === 3 || this.sheetKind === 4 ? '72%' : 290,
-      preferType: SheetType.BOTTOM,
-      dragBar: true,
-      showClose: false,
-      maskColor: this.isDark ? '#88040B18' : '#66404A5A',
-      systemMaterial: this.sheetMaterial(),
-      onWillDismiss: () => {
-        this.sheetKind = 0;
-      }
-    })
   }
 }
