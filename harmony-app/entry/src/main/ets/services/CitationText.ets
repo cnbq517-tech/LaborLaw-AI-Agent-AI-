@@ -1,12 +1,16 @@
+import { LawCitation } from '../models/AppModels';
+
 // Splits model answers into plain text and [Kn] citation markers so the UI can
-// render markers as tappable chips, and finds the quoted sentence in a cited
-// excerpt so the detail sheet can highlight it.
+// render markers as tappable chips, finds the quoted sentence in a cited
+// excerpt so the detail sheet can highlight it, and builds clipboard text.
 
 const CLAUSE_BREAKS: string = '。！？；\n';
 // Source documents wrap lines mid-sentence, so newlines are not sentence breaks here.
 const EXCERPT_BREAKS: string = '。！？；';
 const MIN_MATCH: number = 6;
 const MAX_MATCH: number = 32;
+const CHIP_PADDING: string = '\u00A0';
+const COPY_FOOTER: string = '—— 来自劳动权益助手，仅供参考，不构成法律意见';
 
 export class AnswerSegment {
   text: string;
@@ -30,6 +34,70 @@ export class HighlightRange {
 }
 
 export class CitationText {
+  // Text shown for a citation chip. Selection offsets reported by the Text
+  // component count these characters, so copy mapping must use the same label.
+  static chipLabel(citationIndex: number): string {
+    return CHIP_PADDING + (citationIndex + 1).toString() + CHIP_PADDING;
+  }
+
+  // Clipboard text for a whole answer (end < 0) or for a selection measured in
+  // rendered characters. Plain copies drop citation chips; copies with
+  // citations turn chips into [依据n] and list only the citations used.
+  static copyText(content: string, citations: LawCitation[], withCitations: boolean,
+    start: number = 0, end: number = -1): string {
+    const segments: AnswerSegment[] = CitationText.split(content, citations.length);
+    const used: boolean[] = citations.map((): boolean => false);
+    let output: string = '';
+    let position: number = 0;
+    segments.forEach((segment: AnswerSegment) => {
+      const rendered: string = segment.citationIndex < 0 ? segment.text :
+        CitationText.chipLabel(segment.citationIndex);
+      const from: number = Math.max(start, position);
+      const to: number = end < 0 ? position + rendered.length : Math.min(end, position + rendered.length);
+      if (to > from) {
+        if (segment.citationIndex < 0) {
+          output += rendered.substring(from - position, to - position);
+        } else if (withCitations) {
+          output += '[依据' + (segment.citationIndex + 1).toString() + ']';
+          used[segment.citationIndex] = true;
+        }
+      }
+      position += rendered.length;
+    });
+    output = output.trim();
+    if (!withCitations) {
+      return output;
+    }
+    const references: string[] = [];
+    used.forEach((isUsed: boolean, index: number) => {
+      if (isUsed) {
+        references.push('[依据' + (index + 1).toString() + ']' + CitationText.referenceLabel(citations[index]));
+      }
+    });
+    if (references.length > 0) {
+      output += '\n\n参考依据：\n' + references.join('\n');
+    }
+    return output + '\n\n' + COPY_FOOTER;
+  }
+
+  static usedCitationCount(content: string, citationCount: number): number {
+    const used: Set<number> = new Set<number>();
+    CitationText.split(content, citationCount).forEach((segment: AnswerSegment) => {
+      if (segment.citationIndex >= 0) {
+        used.add(segment.citationIndex);
+      }
+    });
+    return used.size;
+  }
+
+  private static referenceLabel(citation: LawCitation): string {
+    // Keep a title's own book-title marks, using the nested form inside 《》.
+    const title: string = citation.title.trim().replace(/^《/, '').replace(/》$/, '')
+      .replace(/《/g, '〈').replace(/》/g, '〉');
+    const article: string = citation.article.includes('片段') ? '' : citation.article;
+    return '《' + title + '》' + article;
+  }
+
   static split(content: string, citationCount: number): AnswerSegment[] {
     const segments: AnswerSegment[] = [];
     let plainStart: number = 0;

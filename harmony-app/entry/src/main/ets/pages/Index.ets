@@ -1,5 +1,5 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { deviceInfo, pasteboard } from '@kit.BasicServicesKit';
 import { KeyboardAvoidMode, mediaquery, uiMaterial, window } from '@kit.ArkUI';
 import {
   DividerMode,
@@ -35,6 +35,12 @@ import { AnswerSegment, CitationText, HighlightRange } from '../services/Citatio
 import { KnowledgeService } from '../services/KnowledgeService';
 import { LawCardStateService } from '../services/LawCardStateService';
 import { DARK, LIGHT, ThemeColors } from '../theme/Theme';
+import { EVIDENCE_MODE_LIST, EvidenceLibrary } from '../components/EvidenceLibrary';
+import { EvidenceItem } from '../models/Evidence';
+import { CAT_OTHER, ChecklistItem, EvidenceExtractor } from '../services/EvidenceExtractor';
+import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
+import { EvidenceIndex } from '../services/EvidenceIndex';
+import { EvidenceStore } from '../services/EvidenceStore';
 
 const CONTENT_BOTTOM: number = 128;
 const STREAM_QUICK: number = 0;
@@ -46,6 +52,22 @@ const PERSIST_DELAY: number = 600;
 const STOPPED_SUFFIX: string = '\n\n（已停止生成）';
 const DRAWER_WIDTH: number = 320;
 const SHEET_CITATION: number = 6;
+const SHEET_CHECKLIST: number = 7;
+const EVIDENCE_TEXT_LIMIT: number = 16000;
+
+// One row of 证据核对: a checklist item from an AI answer and what the
+// evidence library holds for it.
+class ChecklistRow {
+  item: ChecklistItem;
+  // Items whose category satisfies the checklist item.
+  matched: EvidenceItem[] = [];
+  // Items that only mention one of its terms in their text.
+  related: EvidenceItem[] = [];
+
+  constructor(item: ChecklistItem) {
+    this.item = item;
+  }
+}
 const LIGHT_BUTTON: number = 0;
 const LIGHT_PANEL: number = 2;
 
@@ -142,6 +164,13 @@ struct Index {
   @State drawerGlowY: number = 0;
   @State drawerGlowOn: boolean = false;
   @State drawerVisible: boolean = false;
+  @State evidenceOpen: boolean = false;
+  @State evidenceMode: number = EVIDENCE_MODE_LIST;
+  @State evidenceCount: number = 0;
+  @State evidenceQuery: string = '';
+  @State evidenceCategory: string = '';
+  @State evidenceImport: boolean = false;
+  @State checklistRows: ChecklistRow[] = [];
   @State drawerOpen: boolean = false;
   @State drawerDrag: number = 0;
   @State historyQuery: string = '';
@@ -171,6 +200,7 @@ struct Index {
   private quickSessionId: string = '';
   private detailLeads: string[] = [];
   private detailReturnSheet: number = 0;
+  private textSelecting: boolean = false;
   private lightEffects: Map<string, VisualEffect> = new Map<string, VisualEffect>();
   private historySearchController: TextInputController = new TextInputController();
   private darkListener: mediaquery.MediaQueryListener | undefined = undefined;
@@ -210,6 +240,11 @@ struct Index {
     this.loadConfig();
     this.loadKnowledge();
     this.restoreState();
+    EvidenceStore.load(this.abilityContext()).then((items: EvidenceItem[]) => {
+      this.evidenceCount = items.length;
+    }).catch(() => {
+      this.evidenceCount = 0;
+    });
   }
 
   aboutToDisappear(): void {
@@ -293,7 +328,8 @@ struct Index {
   private drawerSwiping: boolean = false;
 
   private beginDrawerSwipe(): void {
-    if (this.drawerVisible || this.sheetKind !== 0) {
+    // Dragging a selection handle must not pull the drawer out.
+    if (this.drawerVisible || this.sheetKind !== 0 || this.textSelecting) {
       return;
     }
     this.drawerSwiping = true;
@@ -711,7 +747,7 @@ struct Index {
   private clearLocalRecords(): void {
     this.getUIContext().showAlertDialog({
       title: '清空本机记录',
-      message: '将删除普法咨询及其历史记录、案件对话、卷宗内容和分析报告。此操作无法撤销。',
+      message: '将删除普法咨询及其历史记录、案件对话、卷宗内容、分析报告和证据库。此操作无法撤销。',
       autoCancel: true,
       primaryButton: {
         value: '取消',
@@ -743,6 +779,14 @@ struct Index {
           this.reportError = '';
           this.reportStage = 0;
           this.updateProgress();
+          EvidenceIndex.clear().catch(() => {
+            // Without a search index there is nothing to clear.
+          });
+          EvidenceStore.clearAll(this.abilityContext()).then(() => {
+            this.evidenceCount = 0;
+          }).catch(() => {
+            // Evidence files that fail to delete stay listed until next launch.
+          });
           this.schedulePersist();
         }
       }
@@ -1195,6 +1239,162 @@ struct Index {
     return this.isDark ? this.cx.onBrand : this.cx.brand;
   }
 
+  // The report is read from state rather than builder arguments, which are
+  // passed by value and would go stale after the report is regenerated.
+  private copySource(content: string, citations: LawCitation[], isReport: boolean): string {
+    return isReport ? this.dossierReport : content;
+  }
+
+  private copyCitations(citations: LawCitation[], isReport: boolean): LawCitation[] {
+    return isReport ? this.reportCitations : citations;
+  }
+
+  private copyAnswer(content: string, citations: LawCitation[], withCitations: boolean,
+    start: number = 0, end: number = -1): void {
+    const text: string = CitationText.copyText(content, citations, withCitations, start, end);
+    if (text.length === 0) {
+      return;
+    }
+    const used: number = CitationText.usedCitationCount(content, citations.length);
+    const message: string = !withCitations ? '已复制' :
+      (end < 0 ? '已复制回答和 ' + used.toString() + ' 条依据' : '已复制，含引用依据');
+    try {
+      const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.getSystemPasteboard().setData(data).then(() => {
+        this.getUIContext().getPromptAction().showToast({ message: message, duration: 1500 });
+      }).catch(() => {
+        this.getUIContext().getPromptAction().showToast({ message: '复制失败，请重试', duration: 1500 });
+      });
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: '复制失败，请重试', duration: 1500 });
+    }
+  }
+
+  // Replaces the system copy with a plain-text copy (chips removed) and adds
+  // 复制含依据 next to it when the answer cites anything.
+  private answerMenu(content: string, citations: LawCitation[], isReport: boolean = false): EditMenuOptions {
+    const withCitationsId: TextMenuItemId = TextMenuItemId.of('copy_with_citations');
+    return {
+      onCreateMenu: (items: Array<TextMenuItem>): Array<TextMenuItem> => {
+        const source: string = this.copySource(content, citations, isReport);
+        const cites: LawCitation[] = this.copyCitations(citations, isReport);
+        if (CitationText.usedCitationCount(source, cites.length) === 0) {
+          return items;
+        }
+        const copyIndex: number = items.findIndex((item: TextMenuItem) => item.id.equals(TextMenuItemId.COPY));
+        const extra: TextMenuItem = { content: '复制含依据', id: withCitationsId };
+        items.splice(copyIndex >= 0 ? copyIndex + 1 : items.length, 0, extra);
+        return items;
+      },
+      onMenuItemClick: (item: TextMenuItem, range: TextRange): boolean => {
+        const isPlain: boolean = item.id.equals(TextMenuItemId.COPY);
+        if (!isPlain && !item.id.equals(withCitationsId)) {
+          return false;
+        }
+        this.copyAnswer(this.copySource(content, citations, isReport), this.copyCitations(citations, isReport),
+          !isPlain, range.start ?? 0, range.end ?? -1);
+        return true;
+      }
+    };
+  }
+
+  private openEvidence(query: string, category: string, importNow: boolean): void {
+    this.evidenceQuery = query;
+    this.evidenceCategory = category;
+    this.evidenceImport = importNow;
+    this.evidenceMode = EVIDENCE_MODE_LIST;
+    this.sheetKind = 0;
+    this.evidenceOpen = true;
+  }
+
+  private fillDossier(field: number, value: string): void {
+    const labels: string[] = ['案件发生地', '单位名称', '平均月薪', '时间节点'];
+    if (field === 0) {
+      this.location = value;
+    } else if (field === 1) {
+      this.company = value;
+    } else if (field === 2) {
+      this.salary = value;
+    } else if (field === 3) {
+      this.timeline = value;
+    } else {
+      return;
+    }
+    this.updateProgress();
+    this.schedulePersist();
+    this.getUIContext().getPromptAction().showToast({
+      message: '已填入卷宗：' + labels[field], duration: 1500
+    });
+  }
+
+  // Puts the recognized text into the 案件 composer as an attachment. The
+  // attachment flow already treats it as material, not instructions.
+  private askWithEvidence(item: EvidenceItem): void {
+    const body: string = (item.category.length > 0 ? '材料类别：' + item.category + '\n' : '')
+      + (item.rowsText.length > 0 ? item.rowsText : item.text);
+    const truncated: boolean = body.length > EVIDENCE_TEXT_LIMIT;
+    this.caseAttachment = new FileAttachment(item.title, '证据图片（手机端文字识别）',
+      truncated ? body.substring(0, EVIDENCE_TEXT_LIMIT) : body, truncated);
+    this.caseAttachmentError = '';
+    if (this.caseMessage.trim().length === 0) {
+      this.caseMessage = '请结合这份材料分析：';
+    }
+    this.evidenceOpen = false;
+    this.currentSection = AppSection.CASE;
+    this.scrollConversationToBottom(this.caseScroller);
+  }
+
+  private hasChecklist(content: string): boolean {
+    return EvidenceExtractor.checklist(content).length > 0;
+  }
+
+  // 证据核对: for each 证据清单 item, evidence of a matching category counts as
+  // 已有; items that only mention a term in their text are 可能相关.
+  private async openChecklist(content: string): Promise<void> {
+    const items: ChecklistItem[] = EvidenceExtractor.checklist(content);
+    if (items.length === 0) {
+      return;
+    }
+    let evidence: EvidenceItem[] = [];
+    try {
+      evidence = await EvidenceStore.load(this.abilityContext());
+    } catch (error) {
+      evidence = [];
+    }
+    this.checklistRows = items.map((item: ChecklistItem) => {
+      const row: ChecklistRow = new ChecklistRow(item);
+      row.matched = evidence.filter((entry: EvidenceItem) => item.categories.includes(entry.category));
+      const related: SearchResult[] = EvidenceSearch.merge(evidence, item.terms.join(' '), new Map<string, number>());
+      row.related = related.map((result: SearchResult) => result.item)
+        .filter((entry: EvidenceItem) => !row.matched.some((match: EvidenceItem) => match.id === entry.id));
+      return row;
+    });
+    this.sheetKind = SHEET_CHECKLIST;
+  }
+
+  private checklistHave(): number {
+    return this.checklistRows.filter((row: ChecklistRow) => row.matched.length > 0).length;
+  }
+
+  private evidenceSummary(evidence: EvidenceItem[]): string {
+    if (evidence.length === 0) {
+      return '';
+    }
+    const groups: Map<string, string[]> = new Map<string, string[]>();
+    evidence.forEach((item: EvidenceItem) => {
+      const category: string = item.category.length > 0 ? item.category : CAT_OTHER;
+      const titles: string[] = groups.get(category) ?? [];
+      titles.push(item.title);
+      groups.set(category, titles);
+    });
+    const parts: string[] = [];
+    groups.forEach((titles: string[], category: string) => {
+      parts.push(category + ' ' + titles.length.toString() + ' 份（' + titles.slice(0, 3).join('、')
+        + (titles.length > 3 ? '等' : '') + '）');
+    });
+    return '\n已有证据（证据库，仅列名称）：' + parts.join('；');
+  }
+
   private answerSegments(content: string, citations: LawCitation[]): AnswerSegment[] {
     return CitationText.split(content, citations.length);
   }
@@ -1331,6 +1531,12 @@ struct Index {
     const handle: StreamHandle = this.beginStream(STREAM_REPORT);
     try {
       const summary: string = this.dossierSummary();
+      let evidenceText: string = '';
+      try {
+        evidenceText = this.evidenceSummary(await EvidenceStore.load(this.abilityContext()));
+      } catch (error) {
+        evidenceText = '';
+      }
       this.reportStage = 2;
       const knowledge: KnowledgeResult = await KnowledgeService.search(summary);
       if (handle.cancelled) {
@@ -1340,7 +1546,7 @@ struct Index {
       const messages: ChatMessage[] = [
         new ChatMessage(ChatRole.SYSTEM, this.caseSystemPrompt(knowledge)
           + '请根据卷宗生成一份简明分析，包含：事实摘要、待确认信息、初步风险、证据建议、行动步骤。'),
-        new ChatMessage(ChatRole.USER, summary)
+        new ChatMessage(ChatRole.USER, summary + evidenceText)
       ];
       this.reportStage = 3;
       const outcome: StreamOutcome =
@@ -1737,6 +1943,12 @@ struct Index {
           .lineHeight(24)
           .fontColor(this.cx.onBrand)
           .constraintSize({ maxWidth: '84%' })
+          .copyOption(CopyOptions.LocalDevice)
+          .caretColor(this.cx.gold)
+          .selectedBackgroundColor(this.isDark ? '#4D08111F' : '#59FFFFFF')
+          .onTextSelectionChange((start: number, end: number) => {
+            this.textSelecting = start !== end;
+          })
           .padding({ left: 14, right: 14, top: 11, bottom: 11 })
           .backgroundColor(this.cx.brand)
           .borderRadius({ topLeft: 18, topRight: 6, bottomLeft: 18, bottomRight: 18 })
@@ -1753,11 +1965,11 @@ struct Index {
         .backgroundColor(this.cx.brandStrong)
         .borderRadius(9)
         Text() {
-  ForEach(this.answerSegments(message.content, message.citations), (segment: AnswerSegment) => {
+          ForEach(this.answerSegments(message.content, message.citations), (segment: AnswerSegment) => {
             if (segment.citationIndex < 0) {
               Span(segment.text)
             } else {
-              Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+              Span(CitationText.chipLabel(segment.citationIndex))
                 .fontSize(12)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.isCitationActive(message.content, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
@@ -1780,10 +1992,68 @@ struct Index {
           .backgroundColor(this.cx.surface)
           .borderRadius({ topLeft: 6, topRight: 18, bottomLeft: 18, bottomRight: 18 })
           .border({ width: 1, color: this.cx.line })
+          .copyOption(CopyOptions.LocalDevice)
+          .caretColor(this.cx.gold)
+          .selectedBackgroundColor(this.cx.selection)
+          .editMenuOptions(this.answerMenu(message.content, message.citations))
+          .onTextSelectionChange((start: number, end: number) => {
+            this.textSelecting = start !== end;
+          })
       }
       .width('100%')
       .alignItems(VerticalAlign.Top)
     }
+  }
+
+  @Builder
+  private AnswerActionButton(res: Resource, label: string, primary: boolean, content: string,
+    citations: LawCitation[], isReport: boolean) {
+    Row({ space: 5 }) {
+      this.Icon({ res: res, size: 13, color: primary ? this.cx.gold : this.cx.muted })
+      Text(label)
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(primary ? this.cx.gold : this.cx.muted)
+    }
+    .height(30)
+    .padding({ left: 11, right: 12 })
+    .borderRadius(15)
+    .backgroundColor(primary ? this.citationChipBg() : this.cx.tint)
+    .accessibilityText(label)
+    .onClick(() => {
+      this.copyAnswer(this.copySource(content, citations, isReport), this.copyCitations(citations, isReport),
+        !primary);
+    })
+  }
+
+  @Builder
+  private AnswerActions(content: string, citations: LawCitation[], isReport: boolean) {
+    Row({ space: 8 }) {
+      this.AnswerActionButton($r('app.media.ic_copy'), '复制', true, content, citations, isReport)
+      if (CitationText.usedCitationCount(this.copySource(content, citations, isReport),
+        this.copyCitations(citations, isReport).length) > 0) {
+        this.AnswerActionButton($r('app.media.ic_book'), '复制含依据', false, content, citations, isReport)
+      }
+      if (this.hasChecklist(this.copySource(content, citations, isReport))) {
+        Row({ space: 5 }) {
+          this.Icon({ res: $r('app.media.ic_folder'), size: 13, color: this.cx.onGold })
+          Text('对照证据库')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.cx.onGold)
+        }
+        .height(30)
+        .padding({ left: 11, right: 12 })
+        .borderRadius(15)
+        .backgroundColor(this.cx.gold)
+        .accessibilityText('对照证据库')
+        .onClick(() => {
+          this.openChecklist(this.copySource(content, citations, isReport));
+        })
+      }
+    }
+    .width('100%')
+    .padding({ left: isReport ? 0 : 36 })
   }
 
   @Builder
@@ -1874,6 +2144,68 @@ struct Index {
         this.openCitationSheet(citations);
       })
     }
+  }
+
+  @Builder
+  private ChecklistBody() {
+    Scroll() {
+      Column({ space: 10 }) {
+        ForEach(this.checklistRows, (row: ChecklistRow) => {
+          Row({ space: 10 }) {
+            Column({ space: 4 }) {
+              Text(row.item.name)
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.cx.text)
+                .width('100%')
+              Text(row.matched.length > 0 ? row.matched.map((entry: EvidenceItem) => entry.title).join('、') :
+                (row.related.length > 0 ? '文字提到：' + row.related.map((entry: EvidenceItem) => entry.title).join('、') :
+                  row.item.detail))
+                .fontSize(11)
+                .fontColor(this.cx.muted)
+                .maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text(row.matched.length > 0 ? '已有 ' + row.matched.length.toString() + ' 份' :
+              (row.related.length > 0 ? '可能相关' : '缺少 · 去导入'))
+              .fontSize(11)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(row.matched.length > 0 ? this.cx.ok : (row.related.length > 0 ? this.cx.warn : this.cx.danger))
+              .padding({ left: 9, right: 9, top: 4, bottom: 4 })
+              .backgroundColor(row.matched.length > 0 ? this.cx.okBg :
+                (row.related.length > 0 ? this.citationChipBg() : this.cx.dangerBg))
+              .borderRadius(999)
+          }
+          .width('100%')
+          .padding(12)
+          .backgroundColor(this.cx.surface)
+          .borderRadius(14)
+          .border({ width: 1, color: this.cx.line })
+          .onClick(() => {
+            if (row.matched.length > 0 && row.item.categories.length > 0) {
+              this.openEvidence('', row.matched[0].category, false);
+            } else if (row.related.length > 0) {
+              this.openEvidence(row.item.terms.length > 1 ? row.item.terms[1] : row.item.name, '', false);
+            } else {
+              this.openEvidence('', '', true);
+            }
+          })
+        }, (row: ChecklistRow) => row.item.name)
+        Text('「已有」按材料类别判断，「可能相关」表示材料文字里提到了相关内容，请以实际材料为准。')
+          .fontSize(10.5)
+          .lineHeight(16)
+          .fontColor(this.cx.faint)
+          .width('100%')
+      }
+      .width('100%')
+      .padding({ bottom: 28 })
+    }
+    .layoutWeight(1)
+    .scrollBar(BarState.Auto)
+    .width('100%')
   }
 
   @Builder
@@ -2057,13 +2389,17 @@ struct Index {
         Row() {
           Column({ space: 4 }) {
             Text(this.sheetKind === 3 ? '本轮检索依据' :
-              this.sheetKind === 4 ? '案件分析报告' : '添加咨询材料')
+              this.sheetKind === 4 ? '案件分析报告' :
+              this.sheetKind === SHEET_CHECKLIST ? '证据核对' : '添加咨询材料')
               .fontSize(19)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.cx.text)
             Text(this.sheetKind === 3 ?
               this.sheetCitations.length.toString() + ' 条本地法规片段' :
-              this.sheetKind === 4 ? '整理事实、检索依据，再生成报告' : '由你主动选择要分析的文件')
+              this.sheetKind === 4 ? '整理事实、检索依据，再生成报告' :
+              this.sheetKind === SHEET_CHECKLIST ? '对照回答里的证据清单 · 已有 ' + this.checklistHave().toString()
+                + ' / ' + this.checklistRows.length.toString() :
+              '由你主动选择要分析的文件')
               .fontSize(12)
               .fontColor(this.cx.muted)
           }
@@ -2084,6 +2420,8 @@ struct Index {
 
       if (this.sheetKind === SHEET_CITATION) {
         this.CitationDetailBody()
+      } else if (this.sheetKind === SHEET_CHECKLIST) {
+        this.ChecklistBody()
       } else if (this.sheetKind === 3) {
         Scroll() {
           Column({ space: 10 }) {
@@ -2124,11 +2462,11 @@ struct Index {
             Scroll() {
               Column({ space: 12 }) {
                 Text() {
-        ForEach(this.answerSegments(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations), (segment: AnswerSegment) => {
+                  ForEach(this.answerSegments(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations), (segment: AnswerSegment) => {
                   if (segment.citationIndex < 0) {
                     Span(segment.text)
                   } else {
-                    Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+                    Span(CitationText.chipLabel(segment.citationIndex))
                       .fontSize(12)
                       .fontWeight(FontWeight.Bold)
                       .fontColor(this.isCitationActive(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
@@ -2147,6 +2485,13 @@ struct Index {
                   .lineHeight(24)
                   .fontColor(this.cx.text)
                   .width('100%')
+                  .copyOption(this.reportStreaming.length > 0 ? CopyOptions.None : CopyOptions.LocalDevice)
+                  .caretColor(this.cx.gold)
+                  .selectedBackgroundColor(this.cx.selection)
+                  .editMenuOptions(this.answerMenu('', [], true))
+                if (this.reportStreaming.length === 0) {
+                  this.AnswerActions('', [], true)
+                }
                 if (this.reportStreaming.length === 0 && this.reportCitations.length > 0) {
                   Button('查看 ' + this.reportCitations.length.toString() + ' 条法规依据')
                     .fontSize(13)
@@ -2309,6 +2654,31 @@ struct Index {
     }
     .width('100%')
     .padding({ left: 4, top: 3, bottom: 3 })
+  }
+
+  @Builder
+  private EvidenceCover() {
+    EvidenceLibrary({
+      cx: this.cx,
+      isDark: this.isDark,
+      mode: $evidenceMode,
+      onClose: () => {
+        this.evidenceOpen = false;
+      },
+      onCountChange: (count: number) => {
+        this.evidenceCount = count;
+      },
+      dossierValues: [this.location, this.company, this.salary, this.timeline, this.request, this.details],
+      onFill: (field: number, value: string) => {
+        this.fillDossier(field, value);
+      },
+      onAsk: (item: EvidenceItem) => {
+        this.askWithEvidence(item);
+      },
+      initialQuery: this.evidenceQuery,
+      initialCategory: this.evidenceCategory,
+      initialImport: this.evidenceImport
+    })
   }
 
   @Builder
@@ -2598,11 +2968,11 @@ struct Index {
       .backgroundColor(this.cx.brandStrong)
       .borderRadius(9)
       Text() {
-ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, kind === STREAM_CASE ? this.caseStreamCitations : this.quickStreamCitations), (segment: AnswerSegment) => {
+        ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, kind === STREAM_CASE ? this.caseStreamCitations : this.quickStreamCitations), (segment: AnswerSegment) => {
           if (segment.citationIndex < 0) {
             Span(segment.text)
           } else {
-            Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+            Span(CitationText.chipLabel(segment.citationIndex))
               .fontSize(12)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.isCitationActive(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
@@ -2897,6 +3267,7 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
               Column({ space: 10 }) {
                 this.ChatBubble(message)
                 if (message.role === ChatRole.ASSISTANT) {
+                  this.AnswerActions(message.content, message.citations, false)
                   this.CitationPanel(message.citations)
                 }
               }
@@ -3020,6 +3391,40 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
         .borderRadius(18)
         .border({ width: 1, color: this.cx.line })
 
+        Row({ space: 11 }) {
+          Column() {
+            this.Icon({ res: $r('app.media.ic_folder'), size: 18, color: this.cx.gold })
+          }
+          .width(38)
+          .height(38)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor(this.citationChipBg())
+          .borderRadius(12)
+          Column({ space: 3 }) {
+            Text('证据库')
+              .fontSize(14)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.cx.text)
+            Text(this.evidenceCount > 0 ? this.evidenceCount.toString() + ' 份材料 · 扫描或导入后自动识别文字' :
+              '扫描合同、工资条，或导入聊天截图')
+              .fontSize(11)
+              .fontColor(this.cx.muted)
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          Text('›')
+            .fontSize(22)
+            .fontColor(this.cx.goldDeep)
+        }
+        .width('100%')
+        .padding(13)
+        .backgroundColor(this.cx.surface)
+        .borderRadius(16)
+        .border({ width: 1, color: this.cx.line })
+        .accessibilityText('打开证据库')
+        .onClick(() => {
+          this.openEvidence('', '', false);
+        })
         Button() {
           Row({ space: 9 }) {
             this.Icon({ res: $r('app.media.ic_doc'), size: 18, color: this.cx.goldDeep })
@@ -3084,6 +3489,7 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
               Column({ space: 10 }) {
                 this.ChatBubble(message)
                 if (message.role === ChatRole.ASSISTANT) {
+                  this.AnswerActions(message.content, message.citations, false)
                   this.CitationPanel(message.citations)
                 }
               }
@@ -3345,11 +3751,11 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
             }
             .width('100%')
             Text() {
-    ForEach(this.answerSegments(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations), (segment: AnswerSegment) => {
+              ForEach(this.answerSegments(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, this.reportStreaming.length > 0 ? this.reportStreamCitations : this.reportCitations), (segment: AnswerSegment) => {
               if (segment.citationIndex < 0) {
                 Span(segment.text)
               } else {
-                Span('\u00A0' + (segment.citationIndex + 1).toString() + '\u00A0')
+                Span(CitationText.chipLabel(segment.citationIndex))
                   .fontSize(12)
                   .fontWeight(FontWeight.Bold)
                   .fontColor(this.isCitationActive(this.reportStreaming.length > 0 ? this.reportStreaming : this.dossierReport, segment.citationIndex) ? this.cx.onGold : this.cx.gold)
@@ -3369,7 +3775,12 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
               .fontColor(this.cx.text)
               .width('100%')
               .margin({ top: 12 })
+              .copyOption(this.reportStreaming.length > 0 ? CopyOptions.None : CopyOptions.LocalDevice)
+              .caretColor(this.cx.gold)
+              .selectedBackgroundColor(this.cx.selection)
+              .editMenuOptions(this.answerMenu('', [], true))
             if (this.reportStreaming.length === 0) {
+              this.AnswerActions('', [], true)
               this.CitationPanel(this.reportCitations)
             }
           }
@@ -3743,7 +4154,7 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
       })
       .bindSheet(this.sheetKind !== 0, this.UnifiedSheet(), {
         height: this.sheetKind === 3 || this.sheetKind === 4 ? '72%' :
-        this.sheetKind === SHEET_CITATION ? '64%' : 290,
+        this.sheetKind === SHEET_CITATION || this.sheetKind === SHEET_CHECKLIST ? '64%' : 290,
         preferType: SheetType.BOTTOM,
         dragBar: true,
         showClose: false,
@@ -3762,5 +4173,17 @@ ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.qui
     }
     .width('100%')
     .height('100%')
+    .bindContentCover(this.evidenceOpen, this.EvidenceCover(), {
+      modalTransition: ModalTransition.DEFAULT,
+      onWillDismiss: (action: DismissContentCoverAction) => {
+        // Back from a detail page or the scanner returns to the list first.
+        if (this.evidenceMode !== EVIDENCE_MODE_LIST) {
+          this.evidenceMode = EVIDENCE_MODE_LIST;
+          return;
+        }
+        action.dismiss();
+        this.evidenceOpen = false;
+      }
+    })
   }
 }
