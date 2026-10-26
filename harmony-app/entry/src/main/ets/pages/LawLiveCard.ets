@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { LawCardHaptics } from '../services/LawCardHaptics';
 import { liveCardStorage } from '../lawcard/LiveCardState';
 
 @Entry(liveCardStorage)
@@ -13,6 +14,7 @@ struct LawLiveCard {
   aboutToAppear(): void {
     hilog.info(0x0000, 'LawLiveCard', 'animation page appeared');
     setTimeout(() => {
+      LawCardHaptics.playUnfold();
       this.getUIContext().animateTo({ duration: 800, curve: Curve.EaseOut }, () => {
         this.unfolded = true;
       });

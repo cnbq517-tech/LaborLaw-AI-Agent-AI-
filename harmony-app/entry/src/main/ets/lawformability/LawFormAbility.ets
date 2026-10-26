@@ -2,12 +2,13 @@ import { formBindingData, FormExtensionAbility, formInfo, formProvider } from '@
 import { Want } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { LawCardStateService } from '../services/LawCardStateService';
+import { LawCardStateService, TIP_AUTO_HIDE_MS } from '../services/LawCardStateService';
 
 export default class LawFormAbility extends FormExtensionAbility {
   onAddForm(want: Want): formBindingData.FormBindingData {
     const formId: string = this.formIdFromWant(want);
     LawCardStateService.registerForm(this.context, formId);
+    LawCardStateService.hideTipIfExpired(this.context, formId).catch(() => {});
     return LawCardStateService.bindingData(this.context);
   }
 
@@ -22,6 +23,14 @@ export default class LawFormAbility extends FormExtensionAbility {
     }
   }
 
+  onChangeFormVisibility(newStatus: Record<string, number>): void {
+    // Backstop for a tip whose hide timer was lost because the extension
+    // process was reclaimed: hide it the next time the card becomes visible.
+    Object.keys(newStatus).forEach((formId: string) => {
+      LawCardStateService.hideTipIfExpired(this.context, formId).catch(() => {});
+    });
+  }
+
   onFormEvent(formId: string, message: string): void {
     if (message.includes('show_law_tip')) {
       this.showTip(formId).catch(() => {});
@@ -32,6 +41,7 @@ export default class LawFormAbility extends FormExtensionAbility {
 
   private async showTip(formId: string): Promise<void> {
     await LawCardStateService.nextTip(this.context, formId);
+    this.scheduleAutoHide(formId);
     try {
       const cardRect: formInfo.Rect = await formProvider.getFormRect(formId);
       await formProvider.requestOverflow(formId, {
@@ -45,6 +55,14 @@ export default class LawFormAbility extends FormExtensionAbility {
       hilog.error(0x0000, 'LawLiveCard', 'requestOverflow failed: %{public}s', JSON.stringify(error));
       // Unsupported devices keep the updated static tip card as fallback.
     }
+  }
+
+  private scheduleAutoHide(formId: string): void {
+    const shownAt: number = LawCardStateService.tipShownAt(this.context);
+    setTimeout(() => {
+      hilog.info(0x0000, 'LawLiveCard', 'auto hide tip');
+      LawCardStateService.hideTipIfExpired(this.context, formId, shownAt).catch(() => {});
+    }, TIP_AUTO_HIDE_MS);
   }
 
   onRemoveForm(formId: string): void {

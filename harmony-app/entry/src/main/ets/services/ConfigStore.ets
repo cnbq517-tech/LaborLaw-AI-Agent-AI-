@@ -57,6 +57,22 @@ export class ConfigStore {
     }
   }
 
+  // Display preferences that are not part of the model connection.
+  static async loadFlag(context: common.UIAbilityContext, key: string, fallback: boolean): Promise<boolean> {
+    try {
+      const store: preferences.Preferences = await preferences.getPreferences(context, PREFERENCES_NAME);
+      return await store.get(key, fallback) as boolean;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  static async saveFlag(context: common.UIAbilityContext, key: string, value: boolean): Promise<void> {
+    const store: preferences.Preferences = await preferences.getPreferences(context, PREFERENCES_NAME);
+    await store.put(key, value);
+    await store.flush();
+  }
+
   private static async loadApiKey(): Promise<string> {
     const query: asset.AssetMap = new Map<asset.Tag, asset.Value>();
     query.set(asset.Tag.ALIAS, ConfigStore.bytes(API_KEY_ALIAS));

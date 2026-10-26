@@ -5,10 +5,12 @@ import {
   ApiErrorResponse,
   ChatCompletionChunk,
   ChatCompletionDelta,
+  ChatCompletionMessage,
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatMessage
 } from '../models/AppModels';
+import { ThinkTagParser } from './ThinkTagParser';
 
 const MAX_RAW_BODY: number = 65536;
 
@@ -46,9 +48,23 @@ export class StreamHandle {
   }
 }
 
+export class StreamResult {
+  answer: string;
+  reasoning: string;
+
+  constructor(answer: string, reasoning: string) {
+    this.answer = answer;
+    this.reasoning = reasoning;
+  }
+}
+
 class StreamState {
   pending: string = '';
   answer: string = '';
+  // Reasoning from dedicated fields; <think> tags inside content are split
+  // out by `parser`.
+  reasoningField: string = '';
+  parser: ThinkTagParser = new ThinkTagParser();
   refusal: string = '';
   streamError: string = '';
   rawBody: string = '';
@@ -154,16 +170,16 @@ export class AiApiClient {
   static async stream(
     config: ApiConfig,
     messages: ChatMessage[],
-    onText: (text: string) => void,
+    onText: (answer: string, reasoning: string) => void,
     handle: StreamHandle
-  ): Promise<string> {
+  ): Promise<StreamResult> {
     const validationError: string = AiApiClient.validateConfig(config);
     if (validationError.length > 0) {
       throw new Error(validationError);
     }
 
     if (handle.cancelled) {
-      return '';
+      return new StreamResult('', '');
     }
     const request: http.HttpRequest = http.createHttp();
     handle.attach(request);
@@ -174,10 +190,10 @@ export class AiApiClient {
 
     request.on('dataReceive', (data: ArrayBuffer) => {
       const text: string = decoder.decodeToString(new Uint8Array(data), { stream: true });
-      const before: number = state.answer.length;
+      const before: number = state.answer.length + AiApiClient.reasoningOf(state).length;
       AiApiClient.consume(state, text, false);
-      if (state.answer.length > before) {
-        onText(state.answer);
+      if (state.answer.length + AiApiClient.reasoningOf(state).length > before) {
+        onText(state.answer, AiApiClient.reasoningOf(state));
       }
     });
 
@@ -192,6 +208,8 @@ export class AiApiClient {
         readTimeout: 180000
       });
       AiApiClient.consume(state, decoder.decodeToString(new Uint8Array(0)), true);
+      state.parser.finish();
+      state.answer = state.parser.answer;
 
       if (statusCode < 200 || statusCode >= 300) {
         throw new Error(AiApiClient.httpErrorMessage(statusCode, state.rawBody));
@@ -203,16 +221,17 @@ export class AiApiClient {
         throw new Error('接口错误：' + state.streamError);
       }
       const answer: string = state.answer.trim();
+      const reasoning: string = AiApiClient.reasoningOf(state).trim();
       if (answer.length > 0) {
-        return answer;
+        return new StreamResult(answer, reasoning);
       }
       if (state.refusal.trim().length > 0) {
-        return state.refusal.trim();
+        return new StreamResult(state.refusal.trim(), reasoning);
       }
       throw new Error('模型返回了空回答');
     } catch (error) {
       if (handle.cancelled) {
-        return state.answer.trim();
+        return new StreamResult(state.answer.trim(), AiApiClient.reasoningOf(state).trim());
       }
       if (error instanceof Error) {
         throw error;
@@ -272,15 +291,45 @@ export class AiApiClient {
     if (delta === undefined || delta === null) {
       return;
     }
+    if (typeof delta.reasoning_content === 'string') {
+      state.reasoningField += delta.reasoning_content;
+    } else if (typeof delta.reasoning === 'string') {
+      state.reasoningField += delta.reasoning;
+    }
     if (typeof delta.content === 'string') {
-      state.answer += delta.content;
+      state.parser.push(delta.content);
+      state.answer = state.parser.answer;
     }
     if (typeof delta.refusal === 'string') {
       state.refusal += delta.refusal;
     }
   }
 
-  private static parseCompletion(raw: string): string {
+  private static reasoningOf(state: StreamState): string {
+    return state.reasoningField + state.parser.reasoning;
+  }
+
+  // Non-streaming bodies from services that ignore `stream: true`.
+  private static parseCompletion(raw: string): StreamResult {
+    const parser: ThinkTagParser = new ThinkTagParser();
+    const message: ChatCompletionMessage | undefined = AiApiClient.completionMessage(raw);
+    parser.push(AiApiClient.extractAnswer(raw));
+    parser.finish();
+    const field: string = message !== undefined && typeof message.reasoning_content === 'string' ?
+      message.reasoning_content : '';
+    return new StreamResult(parser.answer.trim(), (field + parser.reasoning).trim());
+  }
+
+  private static completionMessage(raw: string): ChatCompletionMessage | undefined {
+    try {
+      const parsed: ChatCompletionResponse = JSON.parse(raw) as ChatCompletionResponse;
+      return parsed.choices !== undefined && parsed.choices.length > 0 ? parsed.choices[0].message : undefined;
+    } catch (error) {
+      return undefined;
+    }
+  }
+
+  private static extractAnswer(raw: string): string {
     let parsed: ChatCompletionResponse;
     try {
       parsed = JSON.parse(raw) as ChatCompletionResponse;

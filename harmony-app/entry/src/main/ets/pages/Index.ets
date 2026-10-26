@@ -1,6 +1,6 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { deviceInfo, pasteboard } from '@kit.BasicServicesKit';
-import { KeyboardAvoidMode, mediaquery, uiMaterial, window } from '@kit.ArkUI';
+import { KeyboardAvoidMode, LengthMetrics, mediaquery, uiMaterial, window } from '@kit.ArkUI';
 import {
   DividerMode,
   HdsTabs,
@@ -20,7 +20,7 @@ import {
   LawCitation,
   PromptSuggestion
 } from '../models/AppModels';
-import { AiApiClient, StreamHandle } from '../services/AiApiClient';
+import { AiApiClient, StreamHandle, StreamResult } from '../services/AiApiClient';
 import { AttachmentService } from '../services/AttachmentService';
 import {
   ChatState,
@@ -43,6 +43,13 @@ import { EvidenceIndex } from '../services/EvidenceIndex';
 import { EvidenceStore } from '../services/EvidenceStore';
 
 const CONTENT_BOTTOM: number = 128;
+// Floating tab bar height plus its bottom margin; the pinned 普法 composer sits
+// just above it.
+const TAB_BAR_CLEARANCE: number = 102;
+// Show the jump-to-latest button once the latest content is this far below.
+const JUMP_BUTTON_DISTANCE: number = 240;
+const QUICK_SCROLL_ID: string = 'quickScroll';
+const QUICK_TURN_ID: string = 'quickLastTurn';
 const STREAM_QUICK: number = 0;
 const STREAM_CASE: number = 1;
 const STREAM_REPORT: number = 2;
@@ -90,12 +97,19 @@ class HistoryGroup {
 class StreamOutcome {
   text: string;
   stopped: boolean;
+  reasoning: string = '';
+  thinkMs: number = 0;
 
   constructor(text: string, stopped: boolean) {
     this.text = text;
     this.stopped = stopped;
   }
 }
+
+const SHOW_REASONING_KEY: string = 'show_reasoning';
+const EXPAND_REASONING_KEY: string = 'expand_reasoning';
+// While reasoning streams in, only its tail is rendered to keep layout light.
+const LIVE_REASONING_CHARS: number = 1500;
 
 @Entry
 @Component
@@ -145,6 +159,15 @@ struct Index {
   @State request: string = '';
   @State details: string = '';
   @State keyboardVisible: boolean = false;
+  // Layout of the 普法 conversation, for the pinned composer, the latest turn's
+  // minimum height and the jump-to-latest button.
+  @State quickViewportHeight: number = 0;
+  @State quickContentHeight: number = 0;
+  @State quickPinnedHeight: number = 0;
+  @State quickShowJump: boolean = false;
+  // True after sending in this conversation: the latest turn fills the
+  // viewport so the question can sit at the top while the answer streams.
+  @State quickAnchorTurn: boolean = false;
   @State reduceMotion: boolean = false;
   @State headerProgress: number = 0;
   @State sheetKind: number = 0;
@@ -152,6 +175,14 @@ struct Index {
   @State quickStreaming: string = '';
   @State caseStreaming: string = '';
   @State reportStreaming: string = '';
+  @State quickReasoning: string = '';
+  @State caseReasoning: string = '';
+  @State quickThinkSeconds: number = 0;
+  @State caseThinkSeconds: number = 0;
+  @State liveReasoningOpen: boolean = true;
+  @State expandedReasoning: string[] = [];
+  @State showReasoning: boolean = true;
+  @State autoExpandReasoning: boolean = true;
   @State quickHistory: QuickSession[] = [];
   @State quickStreamCitations: LawCitation[] = [];
   @State caseStreamCitations: LawCitation[] = [];
@@ -238,6 +269,7 @@ struct Index {
     this.observeKeyboard();
     this.applyCardScenario();
     this.loadConfig();
+    this.loadReasoningFlags();
     this.loadKnowledge();
     this.restoreState();
     EvidenceStore.load(this.abilityContext()).then((items: EvidenceItem[]) => {
@@ -661,6 +693,7 @@ struct Index {
     this.quickQuestionController.stopEditing();
     this.quickSessionId = session.id;
     this.quickMessages = session.messages;
+    this.quickAnchorTurn = false;
     this.quickError = '';
     this.currentSection = AppSection.QUICK;
     this.scrollConversationToBottom(this.quickScroller);
@@ -828,49 +861,131 @@ struct Index {
       this.reportStreamCitations = citations;
     }
     let latest: string = '';
+    let latestReasoning: string = '';
     let timer: number = -1;
     let firstRender: boolean = true;
+    const startedAt: number = Date.now();
+    let answerAt: number = 0;
+    this.liveReasoningOpen = this.autoExpandReasoning;
+    // Ticks the 正在思考 · N 秒 counter until the first answer text arrives.
+    const ticker: number = setInterval(() => {
+      if (answerAt === 0) {
+        this.setThinkSeconds(kind, Math.round((Date.now() - startedAt) / 1000));
+      }
+    }, 1000);
     try {
-      const text: string = await AiApiClient.stream(this.currentConfig(), messages, (partial: string): void => {
-        latest = partial;
-        if (timer !== -1) {
-          return;
-        }
-        timer = setTimeout(() => {
-          timer = -1;
-          if (handle.cancelled) {
+      const result: StreamResult = await AiApiClient.stream(this.currentConfig(), messages,
+        (partial: string, reasoning: string): void => {
+          latest = partial;
+          latestReasoning = reasoning;
+          if (answerAt === 0 && partial.trim().length > 0) {
+            answerAt = Date.now();
+            this.setThinkSeconds(kind, Math.round((answerAt - startedAt) / 1000));
+          }
+          if (timer !== -1) {
             return;
           }
-          let follow: boolean = false;
-          if (scroller !== undefined) {
-            try {
-              follow = firstRender || scroller.isAtEnd();
-            } catch (error) {
-              follow = false;
+          timer = setTimeout(() => {
+            timer = -1;
+            if (handle.cancelled) {
+              return;
             }
-          }
-          firstRender = false;
-          this.setStreamingText(kind, KnowledgeService.validateAnswer(latest, citations));
-          if (follow && scroller !== undefined) {
-            this.scrollConversationToBottom(scroller);
-          }
-        }, STREAM_RENDER_INTERVAL);
-      }, handle);
-      return new StreamOutcome(text, handle.cancelled);
+            let follow: boolean = false;
+            if (scroller !== undefined) {
+              try {
+                follow = firstRender || scroller.isAtEnd();
+              } catch (error) {
+                follow = false;
+              }
+            }
+            firstRender = false;
+            this.setStreamingReasoning(kind, latestReasoning);
+            this.setStreamingText(kind, KnowledgeService.validateAnswer(latest, citations));
+            if (follow && scroller !== undefined) {
+              this.scrollConversationToBottom(scroller);
+            }
+          }, STREAM_RENDER_INTERVAL);
+        }, handle);
+      const outcome: StreamOutcome = new StreamOutcome(result.answer, handle.cancelled);
+      outcome.reasoning = result.reasoning;
+      outcome.thinkMs = result.reasoning.length > 0 ? (answerAt > 0 ? answerAt : Date.now()) - startedAt : 0;
+      return outcome;
     } finally {
+      clearInterval(ticker);
       if (timer !== -1) {
         clearTimeout(timer);
       }
       this.setStreamingText(kind, '');
+      this.setStreamingReasoning(kind, '');
+      this.setThinkSeconds(kind, 0);
       if (this.streamHandles[kind] === handle) {
         this.streamHandles[kind] = undefined;
       }
     }
   }
 
+  private setStreamingReasoning(kind: number, text: string): void {
+    if (kind === STREAM_QUICK) {
+      this.quickReasoning = text;
+    } else if (kind === STREAM_CASE) {
+      this.caseReasoning = text;
+    }
+  }
+
+  private setThinkSeconds(kind: number, seconds: number): void {
+    if (kind === STREAM_QUICK) {
+      this.quickThinkSeconds = seconds;
+    } else if (kind === STREAM_CASE) {
+      this.caseThinkSeconds = seconds;
+    }
+  }
+
+  private assistantMessage(outcome: StreamOutcome, citations: LawCitation[]): ChatMessage {
+    const message: ChatMessage = new ChatMessage(ChatRole.ASSISTANT, this.finalAnswer(outcome, citations), citations);
+    message.reasoning = outcome.reasoning;
+    message.thinkMs = outcome.thinkMs;
+    return message;
+  }
+
+  private async loadReasoningFlags(): Promise<void> {
+    this.showReasoning = await ConfigStore.loadFlag(this.abilityContext(), SHOW_REASONING_KEY, true);
+    this.autoExpandReasoning = await ConfigStore.loadFlag(this.abilityContext(), EXPAND_REASONING_KEY, true);
+  }
+
+  private saveReasoningFlag(key: string, value: boolean): void {
+    ConfigStore.saveFlag(this.abilityContext(), key, value).catch(() => {
+      // The toggle still applies for this session.
+    });
+  }
+
+  private reasoningKey(message: ChatMessage): string {
+    return message.content.length.toString() + '|' + message.content.substring(0, 32);
+  }
+
+  private toggleReasoning(message: ChatMessage): void {
+    const key: string = this.reasoningKey(message);
+    this.expandedReasoning = this.expandedReasoning.includes(key) ?
+      this.expandedReasoning.filter((item: string) => item !== key) : this.expandedReasoning.concat([key]);
+  }
+
+  private thinkLabel(milliseconds: number): string {
+    const seconds: number = Math.max(1, Math.round(milliseconds / 1000));
+    return seconds < 60 ? seconds.toString() + ' 秒' :
+      Math.floor(seconds / 60).toString() + ' 分 ' + (seconds % 60).toString() + ' 秒';
+  }
+
+  private liveReasoning(kind: number): string {
+    const text: string = kind === STREAM_CASE ? this.caseReasoning : this.quickReasoning;
+    return text.length > LIVE_REASONING_CHARS ? '…' + text.substring(text.length - LIVE_REASONING_CHARS) : text;
+  }
+
+  private reasoningBorder(): string {
+    return this.isDark ? '#3A3320' : '#EADBB8';
+  }
+
   private finalAnswer(outcome: StreamOutcome, citations: LawCitation[]): string {
     const answer: string = KnowledgeService.validateAnswer(outcome.text, citations);
-    return outcome.stopped ? answer + STOPPED_SUFFIX : answer;
+    return outcome.stopped ? (answer + STOPPED_SUFFIX).trim() : answer;
   }
 
   private onCardScenarioChanged(): void {
@@ -1050,16 +1165,18 @@ struct Index {
       this.question = '';
       this.quickAttachment = new FileAttachment();
       this.quickAttachmentError = '';
-      this.scrollConversationToBottom(this.quickScroller);
+      this.quickAnchorTurn = true;
+      this.scrollQuickTurnToTop();
       const apiMessages: ChatMessage[] =
         this.conversationMessages(this.quickSystemPrompt(knowledge), this.quickMessages);
+      // No scroller: the answer streams below the question without pulling the
+      // view down; the jump button appears once it runs past the screen.
       const outcome: StreamOutcome =
-        await this.runStream(STREAM_QUICK, handle, apiMessages, knowledge.citations, this.quickScroller);
-      if (outcome.text.length > 0) {
+        await this.runStream(STREAM_QUICK, handle, apiMessages, knowledge.citations, undefined);
+      if (outcome.text.length > 0 || outcome.reasoning.length > 0) {
         this.quickMessages = this.quickMessages.concat([
-          new ChatMessage(ChatRole.ASSISTANT, this.finalAnswer(outcome, knowledge.citations), knowledge.citations)
+          this.assistantMessage(outcome, knowledge.citations)
         ]);
-        this.scrollConversationToBottom(this.quickScroller);
       }
     } catch (error) {
       this.quickError = this.errorMessage(error);
@@ -1113,9 +1230,9 @@ struct Index {
         this.conversationMessages(this.caseSystemPrompt(knowledge), this.caseMessages);
       const outcome: StreamOutcome =
         await this.runStream(STREAM_CASE, handle, apiMessages, knowledge.citations, this.caseScroller);
-      if (outcome.text.length > 0) {
+      if (outcome.text.length > 0 || outcome.reasoning.length > 0) {
         this.caseMessages = this.caseMessages.concat([
-          new ChatMessage(ChatRole.ASSISTANT, this.finalAnswer(outcome, knowledge.citations), knowledge.citations)
+          this.assistantMessage(outcome, knowledge.citations)
         ]);
         this.scrollConversationToBottom(this.caseScroller);
       }
@@ -1141,6 +1258,53 @@ struct Index {
       requestMessages.push(new ChatMessage(source.role, apiContent, [], apiContent));
     }
     return requestMessages;
+  }
+
+  // Scrolls the latest question to the top of the 普法 conversation.
+  private scrollQuickTurnToTop(): void {
+    setTimeout(() => {
+      try {
+        const utils = this.getUIContext().getComponentUtils();
+        const scrollTop: number = utils.getRectangleById(QUICK_SCROLL_ID).windowOffset.y;
+        const turnTop: number = utils.getRectangleById(QUICK_TURN_ID).windowOffset.y;
+        const offset: number = this.quickScroller.currentOffset().yOffset +
+          this.getUIContext().px2vp(turnTop - scrollTop) - 8;
+        this.quickScroller.scrollTo({
+          xOffset: 0,
+          yOffset: Math.max(0, offset),
+          animation: { duration: this.reduceMotion ? 0 : 320, curve: Curve.EaseOut }
+        });
+      } catch (error) {
+        this.scrollConversationToBottom(this.quickScroller);
+      }
+    }, 80);
+  }
+
+  private updateQuickJump(): void {
+    const remaining: number = this.quickContentHeight - this.quickViewportHeight -
+      this.quickScroller.currentOffset().yOffset;
+    const show: boolean = this.quickMessages.length > 0 && remaining > JUMP_BUTTON_DISTANCE;
+    if (show !== this.quickShowJump) {
+      this.quickShowJump = show;
+    }
+  }
+
+  // Index of the latest user message; that turn is laid out separately so it
+  // can fill the viewport.
+  private quickTurnStart(): number {
+    for (let i: number = this.quickMessages.length - 1; i >= 0; i--) {
+      if (this.quickMessages[i].role === ChatRole.USER) {
+        return i;
+      }
+    }
+    return 0;
+  }
+
+  private quickTurnMinHeight(): number {
+    if (!this.quickAnchorTurn) {
+      return 0;
+    }
+    return Math.max(0, this.quickViewportHeight - 14 - this.quickPinnedHeight - 12);
   }
 
   private scrollConversationToBottom(scroller: Scroller): void {
@@ -1657,6 +1821,7 @@ struct Index {
     this.quickSessionId = '';
     this.question = '';
     this.quickMessages = [];
+    this.quickAnchorTurn = false;
     this.quickError = '';
     this.quickAttachment = new FileAttachment();
     this.quickAttachmentError = '';
@@ -1934,7 +2099,9 @@ struct Index {
   }
 
   @Builder
-  private ChatBubble(message: ChatMessage) {
+  // flat lays an answer straight on the page background at full width, as the
+  // 普法 conversation does; otherwise it sits in a card beside the avatar.
+  private ChatBubble(message: ChatMessage, flat: boolean = false) {
     if (message.role === ChatRole.USER) {
       Row() {
         Blank()
@@ -1956,14 +2123,16 @@ struct Index {
       .width('100%')
     } else {
       Row({ space: 8 }) {
-        Column() {
-          this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
+        if (!flat) {
+          Column() {
+            this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
+          }
+          .width(28)
+          .height(28)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor(this.cx.brandStrong)
+          .borderRadius(9)
         }
-        .width(28)
-        .height(28)
-        .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.cx.brandStrong)
-        .borderRadius(9)
         Text() {
           ForEach(this.answerSegments(message.content, message.citations), (segment: AnswerSegment) => {
             if (segment.citationIndex < 0) {
@@ -1984,14 +2153,14 @@ struct Index {
           }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
             + '_' + segment.text.length.toString())
         }
-          .fontSize(15)
-          .lineHeight(24)
+          .fontSize(flat ? 15.5 : 15)
+          .lineHeight(flat ? 26 : 24)
           .fontColor(this.cx.text)
           .layoutWeight(1)
-          .padding(13)
-          .backgroundColor(this.cx.surface)
+          .padding(flat ? { left: 2, right: 2, top: 2, bottom: 2 } : 13)
+          .backgroundColor(flat ? Color.Transparent : this.cx.surface)
           .borderRadius({ topLeft: 6, topRight: 18, bottomLeft: 18, bottomRight: 18 })
-          .border({ width: 1, color: this.cx.line })
+          .border({ width: flat ? 0 : 1, color: this.cx.line })
           .copyOption(CopyOptions.LocalDevice)
           .caretColor(this.cx.gold)
           .selectedBackgroundColor(this.cx.selection)
@@ -2027,8 +2196,10 @@ struct Index {
   }
 
   @Builder
-  private AnswerActions(content: string, citations: LawCitation[], isReport: boolean) {
-    Row({ space: 8 }) {
+  // flat adds the 依据 button in place of the separate CitationPanel and drops
+  // the avatar indent, for the 普法 conversation.
+  private AnswerActions(content: string, citations: LawCitation[], isReport: boolean, flat: boolean = false) {
+    Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
       this.AnswerActionButton($r('app.media.ic_copy'), '复制', true, content, citations, isReport)
       if (CitationText.usedCitationCount(this.copySource(content, citations, isReport),
         this.copyCitations(citations, isReport).length) > 0) {
@@ -2051,9 +2222,26 @@ struct Index {
           this.openChecklist(this.copySource(content, citations, isReport));
         })
       }
+      if (flat && citations.length > 0) {
+        Row({ space: 5 }) {
+          this.Icon({ res: $r('app.media.ic_book'), size: 13, color: this.cx.brand })
+          Text('依据 ' + citations.length.toString() + ' 条')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.cx.brand)
+        }
+        .height(30)
+        .padding({ left: 11, right: 12 })
+        .borderRadius(15)
+        .backgroundColor(this.cx.tint)
+        .accessibilityText('查看本轮检索依据')
+        .onClick(() => {
+          this.openCitationSheet(citations);
+        })
+      }
     }
     .width('100%')
-    .padding({ left: isReport ? 0 : 36 })
+    .padding({ left: isReport || flat ? 0 : 36 })
   }
 
   @Builder
@@ -2958,15 +3146,153 @@ struct Index {
 
   @Builder
   private StreamingBubble(kind: number) {
-    Row({ space: 8 }) {
-      Column() {
-        this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
+    Column({ space: 10 }) {
+      if (this.showReasoning && (kind === STREAM_CASE ? this.caseReasoning : this.quickReasoning).length > 0) {
+        this.LiveReasoning(kind)
       }
-      .width(28)
-      .height(28)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.cx.brandStrong)
-      .borderRadius(9)
+      if ((kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming).length > 0) {
+        this.StreamingAnswer(kind)
+      }
+    }
+    .width('100%')
+  }
+
+  // Thinking panel while the model reasons; it folds into a chip once the
+  // answer starts, and can be reopened.
+  @Builder
+  private LiveReasoning(kind: number) {
+    if ((kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming).length > 0 && !this.liveReasoningOpen) {
+      this.ReasoningChip('已思考 ' + ((kind === STREAM_CASE ? this.caseThinkSeconds : this.quickThinkSeconds) > 0 ?
+        (kind === STREAM_CASE ? this.caseThinkSeconds : this.quickThinkSeconds).toString() + ' 秒' : ''), () => {
+        this.liveReasoningOpen = true;
+      })
+    } else {
+      Column({ space: 8 }) {
+        Row({ space: 6 }) {
+          if ((kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming).length === 0) {
+            LoadingProgress()
+              .width(14)
+              .height(14)
+              .color(this.cx.gold)
+          }
+          Text(((kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming).length === 0 ? '正在思考' : '已思考')
+            + ' · ' + (kind === STREAM_CASE ? this.caseThinkSeconds : this.quickThinkSeconds).toString() + ' 秒')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.cx.gold)
+          Blank()
+          Text(this.liveReasoningOpen ? '收起' : '展开')
+            .fontSize(11.5)
+            .fontColor(this.cx.faint)
+            .padding({ left: 8, top: 2, bottom: 2 })
+            .onClick(() => {
+              this.liveReasoningOpen = !this.liveReasoningOpen;
+            })
+        }
+        .width('100%')
+        if (this.liveReasoningOpen) {
+          this.ReasoningText(this.liveReasoning(kind))
+        }
+      }
+      .width('100%')
+      .padding(11)
+      .backgroundColor(this.cx.surface2)
+      .borderRadius(14)
+      .border({ width: 1, color: this.reasoningBorder() })
+    }
+  }
+
+  @Builder
+  private SavedReasoning(message: ChatMessage, flat: boolean = false) {
+    Column() {
+      if (this.expandedReasoning.includes(this.reasoningKey(message))) {
+        Column({ space: 8 }) {
+          Row() {
+            Text('已思考 ' + this.thinkLabel(message.thinkMs))
+              .fontSize(12)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.cx.gold)
+            Blank()
+            Text('收起')
+              .fontSize(11.5)
+              .fontColor(this.cx.faint)
+              .padding({ left: 8, top: 2, bottom: 2 })
+              .onClick(() => {
+                this.toggleReasoning(message);
+              })
+          }
+          .width('100%')
+          this.ReasoningText(message.reasoning)
+          Text('思考过程由模型生成，未经引用校验，可能包含推测，请以正式回答为准。')
+            .fontSize(10.5)
+            .lineHeight(16)
+            .fontColor(this.cx.faint)
+            .width('100%')
+        }
+        .width('100%')
+        .padding(11)
+        .backgroundColor(this.cx.surface2)
+        .borderRadius(14)
+        .border({ width: 1, color: this.reasoningBorder() })
+      } else {
+        this.ReasoningChip('已思考 ' + this.thinkLabel(message.thinkMs), () => {
+          this.toggleReasoning(message);
+        })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: flat ? 0 : 36 })
+  }
+
+  @Builder
+  private ReasoningChip(label: string, action: () => void) {
+    Row({ space: 4 }) {
+      Text(label + ' ›')
+        .fontSize(11.5)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.cx.gold)
+    }
+    .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+    .backgroundColor(this.citationChipBg())
+    .borderRadius(999)
+    .accessibilityText('展开思考过程')
+    .onClick(() => {
+      action();
+    })
+  }
+
+  // Plain text on purpose: citation IDs here are not validated, so they are
+  // not turned into tappable chips.
+  @Builder
+  private ReasoningText(text: string) {
+    // The gold rule is a left border on the text itself; a separate
+    // full-height bar inside a Scroll stretches to the viewport height.
+    Text(text)
+      .fontSize(12.5)
+      .lineHeight(20)
+      .fontColor(this.cx.muted)
+      .width('100%')
+      .padding({ left: 9 })
+      .border({ width: { left: 2 }, color: this.isDark ? '#6B5A2E' : '#D9C08A' })
+      .copyOption(CopyOptions.LocalDevice)
+      .selectedBackgroundColor(this.cx.selection)
+      .caretColor(this.cx.gold)
+  }
+
+  @Builder
+  private StreamingAnswer(kind: number) {
+    Row({ space: 8 }) {
+      if (kind !== STREAM_QUICK) {
+        Column() {
+          this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
+        }
+        .width(28)
+        .height(28)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.cx.brandStrong)
+        .borderRadius(9)
+      }
       Text() {
         ForEach(this.answerSegments(kind === STREAM_CASE ? this.caseStreaming : this.quickStreaming, kind === STREAM_CASE ? this.caseStreamCitations : this.quickStreamCitations), (segment: AnswerSegment) => {
           if (segment.citationIndex < 0) {
@@ -2987,14 +3313,14 @@ struct Index {
         }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
           + '_' + segment.text.length.toString())
       }
-        .fontSize(15)
-        .lineHeight(24)
+        .fontSize(kind === STREAM_QUICK ? 15.5 : 15)
+        .lineHeight(kind === STREAM_QUICK ? 26 : 24)
         .fontColor(this.cx.text)
         .layoutWeight(1)
-        .padding(13)
-        .backgroundColor(this.cx.surface)
+        .padding(kind === STREAM_QUICK ? { left: 2, right: 2, top: 2, bottom: 2 } : 13)
+        .backgroundColor(kind === STREAM_QUICK ? Color.Transparent : this.cx.surface)
         .borderRadius({ topLeft: 6, topRight: 18, bottomLeft: 18, bottomRight: 18 })
-        .border({ width: 1, color: this.cx.line })
+        .border({ width: kind === STREAM_QUICK ? 0 : 1, color: this.cx.line })
     }
     .width('100%')
     .alignItems(VerticalAlign.Top)
@@ -3132,26 +3458,24 @@ struct Index {
   }
 
   @Builder
-  private Composer(compact: boolean) {
+  private Composer() {
     Column() {
-      if (!compact) {
-        Row({ space: 9 }) {
-          Column() {
-            this.Icon({ res: $r('app.media.ic_consult'), size: 16, color: this.badgeIconColor() })
-          }
-          .width(30)
-          .height(30)
-          .justifyContent(FlexAlign.Center)
-          .backgroundColor(this.badgeBackground())
-          .borderRadius(10)
-          Text('先把情况告诉我')
-            .fontSize(17)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.cx.text)
+      Row({ space: 9 }) {
+        Column() {
+          this.Icon({ res: $r('app.media.ic_consult'), size: 16, color: this.badgeIconColor() })
         }
-        .width('100%')
-        .margin({ bottom: 11 })
+        .width(30)
+        .height(30)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.badgeBackground())
+        .borderRadius(10)
+        Text('先把情况告诉我')
+          .fontSize(17)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.cx.text)
       }
+      .width('100%')
+      .margin({ bottom: 11 })
       if (this.quickAttachment.name.length > 0) {
         this.AttachmentChip(this.quickAttachment, false)
       }
@@ -3219,19 +3543,168 @@ struct Index {
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')
-    .padding(compact ? 12 : 15)
+    .padding(15)
     .backgroundColor(this.cx.surface)
     .borderRadius(22)
     .border({ width: 1, color: this.cx.line })
-    .shadow({ radius: compact ? 14 : 18, color: this.cx.softShadow, offsetY: 6 })
+    .shadow({ radius: 18, color: this.cx.softShadow, offsetY: 6 })
+  }
+
+  // Composer pinned above the tab bar (or the keyboard) once a 普法
+  // conversation has started, so follow-ups never need a scroll to the end.
+  @Builder
+  private PinnedComposer() {
+    Column() {
+      Column()
+        .width('100%')
+        .height(22)
+        .linearGradient({ angle: 180, colors: [['#00' + this.cx.bgBottom.substring(1), 0.0], [this.cx.bgBottom, 1.0]] })
+        .hitTestBehavior(HitTestMode.Transparent)
+      Column() {
+        if (this.quickAttachment.name.length > 0) {
+          this.AttachmentChip(this.quickAttachment, false)
+        }
+        if (this.quickAttachmentError.length > 0) {
+          this.AttachmentError(this.quickAttachmentError)
+        }
+        Row({ space: 6 }) {
+          Button({ type: ButtonType.Circle, stateEffect: true }) {
+            this.Icon({ res: $r('app.media.ic_plus'), size: 17, color: this.cx.gold })
+          }
+          .width(36)
+          .height(36)
+          .backgroundColor(this.cx.surface2)
+          .enabled(!this.isAttachmentPicking && !this.isQuickSending)
+          .onClick(() => {
+            this.openAttachmentSheet(false);
+          })
+          TextArea({
+            text: this.question,
+            placeholder: '继续追问…',
+            controller: this.quickQuestionController
+          })
+            .layoutWeight(1)
+            .constraintSize({ minHeight: 38, maxHeight: 100 })
+            .fontSize(15)
+            .fontColor(this.cx.text)
+            .placeholderColor(this.cx.placeholder)
+            .caretColor(this.cx.gold)
+            .selectedBackgroundColor(this.cx.selection)
+            .backgroundColor(Color.Transparent)
+            .borderWidth(0)
+            .padding({ left: 4, right: 4, top: 8, bottom: 8 })
+            .onChange((value: string) => {
+              this.question = value;
+            })
+          // 本地法规检索 is always on; a small mark keeps that visible.
+          Column() {
+            this.Icon({ res: $r('app.media.ic_book'), size: 14, color: this.cx.ok })
+          }
+          .margin({ bottom: 11 })
+          if (this.isQuickSending) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              this.Icon({ res: $r('app.media.ic_stop'), size: 18, color: this.cx.onGold })
+            }
+            .width(36)
+            .height(36)
+            .backgroundColor(this.cx.gold)
+            .accessibilityText('停止生成')
+            .onClick(() => {
+              this.stopStream(STREAM_QUICK);
+            })
+          } else {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              this.Icon({ res: $r('app.media.ic_send'), size: 17, color: this.cx.onGold })
+            }
+            .width(36)
+            .height(36)
+            .backgroundColor(this.canSendQuick() ? this.cx.gold : this.cx.surface2)
+            .enabled(this.canSendQuick())
+            .accessibilityText('发送')
+            .onClick(() => {
+              this.sendQuickQuestion();
+            })
+          }
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Bottom)
+        .padding(4)
+        .backgroundColor(this.cx.surface)
+        .borderRadius(24)
+        .border({ width: 1, color: this.cx.line })
+        .shadow({ radius: 14, color: this.cx.softShadow, offsetY: 4 })
+        Text('AI 内容仅供参考，重要决定请核对最新法规或咨询专业人士')
+          .fontSize(9)
+          .fontColor(this.cx.muted)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .margin({ top: 5 })
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, bottom: this.keyboardVisible ? 8 : TAB_BAR_CLEARANCE })
+      .backgroundColor(this.cx.bgBottom)
+    }
+    .width('100%')
+    .onAreaChange((oldValue: Area, newValue: Area) => {
+      this.quickPinnedHeight = newValue.height as number;
+    })
+  }
+
+  @Builder
+  private JumpToLatest() {
+    Button({ type: ButtonType.Circle, stateEffect: true }) {
+      this.Icon({ res: $r('app.media.ic_arrow_down'), size: 18, color: this.cx.text })
+    }
+    .width(38)
+    .height(38)
+    .backgroundColor(this.cx.surface)
+    .border({ width: 1, color: this.cx.line })
+    .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
+    .accessibilityText('回到最新')
+    .margin({ right: 18, bottom: this.quickPinnedHeight + 10 })
+    .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
+      .animation({ duration: this.reduceMotion ? 0 : 160 }))
+    .onClick(() => {
+      this.quickScroller.scrollEdge(Edge.Bottom, { velocity: 1600 });
+    })
   }
 
   @Builder
   private QuickPage() {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      this.QuickScroll()
+      if (this.quickMessages.length > 0) {
+        this.PinnedComposer()
+        if (this.quickShowJump) {
+          this.JumpToLatest()
+        }
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  private QuickMessage(message: ChatMessage) {
+    Column({ space: 10 }) {
+      if (message.role === ChatRole.ASSISTANT && this.showReasoning && message.reasoning.length > 0) {
+        this.SavedReasoning(message, true)
+      }
+      this.ChatBubble(message, true)
+      if (message.role === ChatRole.ASSISTANT) {
+        this.AnswerActions(message.content, message.citations, false, true)
+      }
+    }
+    .width('100%')
+    .transition(TransitionEffect.OPACITY.animation({ duration: this.reduceMotion ? 0 : 160 }))
+  }
+
+  @Builder
+  private QuickScroll() {
     Scroll(this.quickScroller) {
       Column({ space: 14 }) {
         if (this.quickMessages.length === 0) {
-          this.Composer(false)
+          this.Composer()
           this.TrustStrip()
           Row() {
             Text('常见问题')
@@ -3263,43 +3736,52 @@ struct Index {
           this.NoticeCard()
         } else {
           Column({ space: 10 }) {
-            ForEach(this.quickMessages, (message: ChatMessage) => {
-              Column({ space: 10 }) {
-                this.ChatBubble(message)
-                if (message.role === ChatRole.ASSISTANT) {
-                  this.AnswerActions(message.content, message.citations, false)
-                  this.CitationPanel(message.citations)
+            ForEach(this.quickMessages.slice(0, this.quickTurnStart()), (message: ChatMessage) => {
+              this.QuickMessage(message)
+            })
+            // The latest turn; while anchored it is at least a screen tall so
+            // its question can scroll to the top.
+            Column({ space: 10 }) {
+              ForEach(this.quickMessages.slice(this.quickTurnStart()), (message: ChatMessage) => {
+                this.QuickMessage(message)
+              })
+              if (this.isQuickSending) {
+                if (this.quickStreaming.length > 0 || (this.showReasoning && this.quickReasoning.length > 0)) {
+                  this.StreamingBubble(STREAM_QUICK)
+                } else {
+                  this.SendingIndicator('正在检索本地法规并作答…')
                 }
               }
-              .width('100%')
-              .transition(TransitionEffect.OPACITY.animation({ duration: this.reduceMotion ? 0 : 160 }))
-            })
-            if (this.isQuickSending) {
-              if (this.quickStreaming.length > 0) {
-                this.StreamingBubble(STREAM_QUICK)
-              } else {
-                this.SendingIndicator('正在检索本地法规并作答…')
+              if (this.quickError.length > 0) {
+                this.ErrorHint(this.quickError)
               }
-              this.StopButton(STREAM_QUICK)
             }
+            .id(QUICK_TURN_ID)
+            .width('100%')
+            .constraintSize({ minHeight: this.quickTurnMinHeight() })
           }
           .width('100%')
-          if (this.quickError.length > 0) {
-            this.ErrorHint(this.quickError)
-          }
-          this.Composer(true)
-          this.NoticeCard()
         }
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 14, bottom: CONTENT_BOTTOM })
+      .padding({ left: 16, right: 16, top: 14,
+        bottom: this.quickMessages.length > 0 ? this.quickPinnedHeight + 12 : CONTENT_BOTTOM })
+      .onAreaChange((oldValue: Area, newValue: Area) => {
+        this.quickContentHeight = newValue.height as number;
+        this.updateQuickJump();
+      })
     }
+    .id(QUICK_SCROLL_ID)
     .scrollBar(BarState.Off)
     .width('100%')
     .height('100%')
     .edgeEffect(EdgeEffect.Spring)
+    .onAreaChange((oldValue: Area, newValue: Area) => {
+      this.quickViewportHeight = newValue.height as number;
+    })
     .onDidScroll(() => {
       this.updateHeaderForScroll(this.quickScroller);
+      this.updateQuickJump();
     })
     .gesture(
       PanGesture({ direction: PanDirection.Right, distance: 12 })
@@ -3487,6 +3969,9 @@ struct Index {
           Column({ space: 10 }) {
             ForEach(this.caseMessages, (message: ChatMessage) => {
               Column({ space: 10 }) {
+                if (message.role === ChatRole.ASSISTANT && this.showReasoning && message.reasoning.length > 0) {
+                  this.SavedReasoning(message)
+                }
                 this.ChatBubble(message)
                 if (message.role === ChatRole.ASSISTANT) {
                   this.AnswerActions(message.content, message.citations, false)
@@ -3497,7 +3982,7 @@ struct Index {
               .transition(TransitionEffect.OPACITY.animation({ duration: this.reduceMotion ? 0 : 160 }))
             })
             if (this.isCaseSending) {
-              if (this.caseStreaming.length > 0) {
+              if (this.caseStreaming.length > 0 || (this.showReasoning && this.caseReasoning.length > 0)) {
                 this.StreamingBubble(STREAM_CASE)
               } else {
                 this.SendingIndicator('正在梳理案件信息…')
@@ -4007,6 +4492,60 @@ struct Index {
             .onClick(() => {
               this.clearLocalRecords();
             })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding(16)
+        .backgroundColor(this.cx.surface)
+        .borderRadius(18)
+        .border({ width: 1, color: this.cx.line })
+
+        Column({ space: 12 }) {
+          this.SettingCardHeader($r('app.media.ic_consult'), '思考过程')
+          Row() {
+            Column({ space: 3 }) {
+              Text('显示思考过程')
+                .fontSize(14)
+                .fontColor(this.cx.text)
+              Text('模型返回思考内容时，在回答上方显示')
+                .fontSize(11)
+                .fontColor(this.cx.muted)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.showReasoning })
+              .selectedColor(this.cx.brand)
+              .onChange((value: boolean) => {
+                this.showReasoning = value;
+                this.saveReasoningFlag(SHOW_REASONING_KEY, value);
+              })
+          }
+          .width('100%')
+          Row() {
+            Column({ space: 3 }) {
+              Text('思考中自动展开')
+                .fontSize(14)
+                .fontColor(this.showReasoning ? this.cx.text : this.cx.faint)
+              Text('关闭后只显示「正在思考」，不展开内容')
+                .fontSize(11)
+                .fontColor(this.cx.muted)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.autoExpandReasoning })
+              .selectedColor(this.cx.brand)
+              .enabled(this.showReasoning)
+              .onChange((value: boolean) => {
+                this.autoExpandReasoning = value;
+                this.saveReasoningFlag(EXPAND_REASONING_KEY, value);
+              })
+          }
+          .width('100%')
+          Text('需要模型服务返回思考内容，例如 DeepSeek 等推理模型的 reasoning_content。不支持的服务不会显示，也不影响回答。')
+            .fontSize(10.5)
+            .lineHeight(16)
+            .fontColor(this.cx.faint)
+            .width('100%')
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)

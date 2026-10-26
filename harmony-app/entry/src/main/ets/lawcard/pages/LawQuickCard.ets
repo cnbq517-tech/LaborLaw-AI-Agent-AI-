@@ -86,6 +86,11 @@ struct LawQuickCard {
         .alignItems(HorizontalAlign.Start)
         .margin({ top: 9 })
         Blank()
+        Text('稍后自动返回四入口')
+          .fontSize(8)
+          .fontColor('#8593A8')
+          .width('100%')
+          .margin({ bottom: 3 })
         Row({ space: 7 }) {
           Text('返回四入口')
             .fontSize(9)

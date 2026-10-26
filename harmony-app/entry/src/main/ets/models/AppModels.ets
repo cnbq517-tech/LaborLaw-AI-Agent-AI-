@@ -28,6 +28,10 @@ export class ChatMessage {
   content: string;
   citations: LawCitation[];
   apiContent: string;
+  // Model reasoning shown in a collapsible panel. Never sent back to the
+  // model: DeepSeek rejects requests that include earlier reasoning_content.
+  reasoning: string = '';
+  thinkMs: number = 0;
 
   constructor(role: string, content: string, citations: LawCitation[] = [], apiContent: string = '') {
     this.role = role;
@@ -159,6 +163,7 @@ export class ChatCompletionMessage {
   role: string = '';
   content: string = '';
   refusal: string = '';
+  reasoning_content: string = '';
 }
 
 export class ChatCompletionChoice {
@@ -175,6 +180,10 @@ export class ChatCompletionResponse {
 export class ChatCompletionDelta {
   content: string = '';
   refusal: string = '';
+  // Reasoning, as DeepSeek and Qwen reasoning models (reasoning_content) or
+  // some aggregators (reasoning) stream it.
+  reasoning_content: string = '';
+  reasoning: string = '';
 }
 
 export class ChatCompletionChunkChoice {

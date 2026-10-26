@@ -9,6 +9,8 @@ const HISTORY_VERSION: number = 1;
 // Keeps the files small enough to rewrite quickly; older turns are dropped.
 const MAX_MESSAGES: number = 100;
 export const MAX_QUICK_SESSIONS: number = 50;
+// Reasoning can be far longer than the answer; keep the saved files small.
+const MAX_REASONING_CHARS: number = 8000;
 
 // One archived 普法 consultation. The newest session comes first in the list.
 export class QuickSession {
@@ -86,9 +88,9 @@ export class ChatStateStore {
   // mid-write never leaves a truncated state file behind.
   static save(context: common.UIAbilityContext, state: ChatState): Promise<void> {
     const snapshot: ChatState = new ChatState();
-    snapshot.quickMessages = state.quickMessages.slice(-MAX_MESSAGES);
+    snapshot.quickMessages = ChatStateStore.capped(state.quickMessages);
     snapshot.quickSessionId = state.quickSessionId;
-    snapshot.caseMessages = state.caseMessages.slice(-MAX_MESSAGES);
+    snapshot.caseMessages = ChatStateStore.capped(state.caseMessages);
     snapshot.dossier = state.dossier;
     return ChatStateStore.enqueueWrite(ChatStateStore.path(context, STATE_FILE), JSON.stringify(snapshot));
   }
@@ -120,7 +122,7 @@ export class ChatStateStore {
   static saveHistory(context: common.UIAbilityContext, sessions: QuickSession[]): Promise<void> {
     const file: QuickHistoryFile = new QuickHistoryFile();
     file.sessions = sessions.slice(0, MAX_QUICK_SESSIONS).map((session: QuickSession) =>
-      new QuickSession(session.id, session.title, session.updatedAt, session.messages.slice(-MAX_MESSAGES)));
+      new QuickSession(session.id, session.title, session.updatedAt, ChatStateStore.capped(session.messages)));
     return ChatStateStore.enqueueWrite(ChatStateStore.path(context, HISTORY_FILE), JSON.stringify(file));
   }
 
@@ -162,9 +164,25 @@ export class ChatStateStore {
       }
       const citations: LawCitation[] = Array.isArray(item.citations) ? item.citations : [];
       const apiContent: string = typeof item.apiContent === 'string' ? item.apiContent : '';
-      result.push(new ChatMessage(item.role, item.content, citations, apiContent));
+      const message: ChatMessage = new ChatMessage(item.role, item.content, citations, apiContent);
+      message.reasoning = typeof item.reasoning === 'string' ? item.reasoning : '';
+      message.thinkMs = typeof item.thinkMs === 'number' ? item.thinkMs : 0;
+      result.push(message);
     });
     return result.slice(-MAX_MESSAGES);
+  }
+
+  // Last MAX_MESSAGES messages, with long reasoning truncated for storage.
+  private static capped(messages: ChatMessage[]): ChatMessage[] {
+    return messages.slice(-MAX_MESSAGES).map((message: ChatMessage) => {
+      if (message.reasoning.length <= MAX_REASONING_CHARS) {
+        return message;
+      }
+      const copy: ChatMessage = new ChatMessage(message.role, message.content, message.citations, message.apiContent);
+      copy.reasoning = message.reasoning.substring(0, MAX_REASONING_CHARS) + '…';
+      copy.thinkMs = message.thinkMs;
+      return copy;
+    });
   }
 
   private static text(value: string): string {

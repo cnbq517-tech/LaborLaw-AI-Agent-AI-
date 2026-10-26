@@ -9,6 +9,10 @@ const SEARCHABLE_COUNT_KEY: string = 'searchable_count';
 const RECENT_CONSULTATION_KEY: string = 'recent_consultation';
 const TIP_INDEX_KEY: string = 'tip_index';
 const TIP_VISIBLE_KEY: string = 'tip_visible';
+const TIP_SHOWN_AT_KEY: string = 'tip_shown_at';
+// How long a shaken-in tip stays on the card before it returns to the four
+// entries, counted from the shake.
+export const TIP_AUTO_HIDE_MS: number = 8000;
 const DEFAULT_DOCUMENT_COUNT: number = 2790;
 const DEFAULT_SEARCHABLE_COUNT: number = 2761;
 
@@ -53,6 +57,36 @@ export class LawCardStateService {
     }
   }
 
+  // Returns the time the tip was shown, so a delayed hide can tell whether a
+  // later shake replaced it.
+  static tipShownAt(context: Context): number {
+    try {
+      const store: preferences.Preferences =
+        preferences.getPreferencesSync(context, { name: PREFERENCES_NAME });
+      return store.getSync(TIP_SHOWN_AT_KEY, 0) as number;
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  // Hides the tip if it has been showing for TIP_AUTO_HIDE_MS. When shownAt is
+  // given, only hides the tip shown at that time.
+  static async hideTipIfExpired(context: Context, formId: string, shownAt: number = 0): Promise<void> {
+    try {
+      const store: preferences.Preferences =
+        preferences.getPreferencesSync(context, { name: PREFERENCES_NAME });
+      const visible: boolean = store.getSync(TIP_VISIBLE_KEY, false) as boolean;
+      const savedShownAt: number = store.getSync(TIP_SHOWN_AT_KEY, 0) as number;
+      if (!visible || (shownAt > 0 && savedShownAt !== shownAt) ||
+        Date.now() - savedShownAt < TIP_AUTO_HIDE_MS - 200) {
+        return;
+      }
+    } catch (error) {
+      return;
+    }
+    await LawCardStateService.hideTip(context, formId);
+  }
+
   static async nextTip(context: Context, formId: string): Promise<LawCardTip> {
     let tip: LawCardTip = LAW_CARD_TIPS[0];
     try {
@@ -64,6 +98,7 @@ export class LawCardStateService {
       tip = LAW_CARD_TIPS[index];
       store.putSync(TIP_INDEX_KEY, index);
       store.putSync(TIP_VISIBLE_KEY, true);
+      store.putSync(TIP_SHOWN_AT_KEY, Date.now());
       store.flushSync();
     } catch (error) {
       // The static card stays usable even if preferences are unavailable.
