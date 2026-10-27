@@ -19,9 +19,6 @@ from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree
 
-import pdfplumber
-from openpyxl import load_workbook
-from pypdf import PdfReader
 
 
 CORE_DIRECTORIES = ("法律", "行政法规", "规章及法律规范")
@@ -184,6 +181,11 @@ def normalize_text(text: str, title: str = "") -> str:
 
 
 def extract_pdf(path: Path) -> Extraction:
+    # Imported here so the chunking helpers can be used without the PDF and
+    # spreadsheet dependencies (see add_documents.py).
+    import pdfplumber
+    from pypdf import PdfReader
+
     title = clean_title(path)
     page_texts: list[str] = []
     page_count = 0
@@ -248,6 +250,8 @@ def extract_docx(path: Path) -> Extraction:
 
 
 def extract_xlsx(path: Path) -> Extraction:
+    from openpyxl import load_workbook
+
     lines: list[str] = []
     with path.open("rb") as source:
         workbook = load_workbook(source, read_only=True, data_only=True)

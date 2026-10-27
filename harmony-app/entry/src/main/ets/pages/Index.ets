@@ -3,6 +3,7 @@ import { deviceInfo, pasteboard } from '@kit.BasicServicesKit';
 import { KeyboardAvoidMode, LengthMetrics, mediaquery, uiMaterial, window } from '@kit.ArkUI';
 import {
   DividerMode,
+  HdsBarStyle,
   HdsTabs,
   HdsTabsController,
   HdsTabsFloatingStyle,
@@ -35,11 +36,18 @@ import { AnswerSegment, CitationText, HighlightRange } from '../services/Citatio
 import { KnowledgeService } from '../services/KnowledgeService';
 import { LawCardStateService } from '../services/LawCardStateService';
 import { DARK, LIGHT, ThemeColors } from '../theme/Theme';
+import {
+  CONTRACT_MODE_CLAUSE,
+  CONTRACT_MODE_HOME,
+  CONTRACT_MODE_REPORT,
+  ContractReview
+} from '../components/ContractReview';
 import { EVIDENCE_MODE_LIST, EvidenceLibrary } from '../components/EvidenceLibrary';
 import { EvidenceItem } from '../models/Evidence';
 import { CAT_OTHER, ChecklistItem, EvidenceExtractor } from '../services/EvidenceExtractor';
 import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
 import { EvidenceIndex } from '../services/EvidenceIndex';
+import { ContractReport, ContractReviewService } from '../services/ContractReviewService';
 import { EvidenceStore } from '../services/EvidenceStore';
 
 const CONTENT_BOTTOM: number = 128;
@@ -48,8 +56,17 @@ const CONTENT_BOTTOM: number = 128;
 const TAB_BAR_CLEARANCE: number = 102;
 // Show the jump-to-latest button once the latest content is this far below.
 const JUMP_BUTTON_DISTANCE: number = 240;
+// Ends every "model not configured" error; ErrorHint offers the 我的 page for
+// these and for authentication failures, and for nothing else.
+const CONFIG_HINT: string = '，请先在「我的」中配置模型服务';
 const QUICK_SCROLL_ID: string = 'quickScroll';
 const QUICK_TURN_ID: string = 'quickLastTurn';
+const CASE_SCROLL_ID: string = 'caseScroll';
+const CASE_TURN_ID: string = 'caseLastTurn';
+// Pages of the 维权 section.
+const RIGHTS_CHAT: number = 0;
+const RIGHTS_DOSSIER: number = 1;
+const RIGHTS_EVIDENCE: number = 2;
 const STREAM_QUICK: number = 0;
 const STREAM_CASE: number = 1;
 const STREAM_REPORT: number = 2;
@@ -168,6 +185,12 @@ struct Index {
   // True after sending in this conversation: the latest turn fills the
   // viewport so the question can sit at the top while the answer streams.
   @State quickAnchorTurn: boolean = false;
+  // The same layout state for the 维权 conversation.
+  @State caseViewportHeight: number = 0;
+  @State caseContentHeight: number = 0;
+  @State casePinnedHeight: number = 0;
+  @State caseShowJump: boolean = false;
+  @State caseAnchorTurn: boolean = false;
   @State reduceMotion: boolean = false;
   @State headerProgress: number = 0;
   @State sheetKind: number = 0;
@@ -195,8 +218,13 @@ struct Index {
   @State drawerGlowY: number = 0;
   @State drawerGlowOn: boolean = false;
   @State drawerVisible: boolean = false;
-  @State evidenceOpen: boolean = false;
   @State evidenceMode: number = EVIDENCE_MODE_LIST;
+  @State rightsTab: number = RIGHTS_CHAT;
+  @State mineOpen: boolean = false;
+  @State contractMode: number = CONTRACT_MODE_HOME;
+  @State contractReportCount: number = 0;
+  // Bumped when local records are cleared, so the 合同 section reloads.
+  @State localDataVersion: number = 0;
   @State evidenceCount: number = 0;
   @State evidenceQuery: string = '';
   @State evidenceCategory: string = '';
@@ -277,6 +305,9 @@ struct Index {
     }).catch(() => {
       this.evidenceCount = 0;
     });
+    ContractReviewService.load(this.abilityContext()).then((reports: ContractReport[]) => {
+      this.contractReportCount = reports.length;
+    });
   }
 
   aboutToDisappear(): void {
@@ -301,6 +332,17 @@ struct Index {
   onBackPress(): boolean {
     if (this.drawerVisible) {
       this.closeHistoryDrawer();
+      return true;
+    }
+    // Back steps out of a contract report or an evidence detail before
+    // leaving the app.
+    if (this.currentSection === AppSection.CONTRACT && this.contractMode !== CONTRACT_MODE_HOME) {
+      this.contractMode = this.contractMode === CONTRACT_MODE_CLAUSE ? CONTRACT_MODE_REPORT : CONTRACT_MODE_HOME;
+      return true;
+    }
+    if (this.currentSection === AppSection.CASE && this.rightsTab === RIGHTS_EVIDENCE &&
+      this.evidenceMode !== EVIDENCE_MODE_LIST) {
+      this.evidenceMode = EVIDENCE_MODE_LIST;
       return true;
     }
     return false;
@@ -780,7 +822,7 @@ struct Index {
   private clearLocalRecords(): void {
     this.getUIContext().showAlertDialog({
       title: '清空本机记录',
-      message: '将删除普法咨询及其历史记录、案件对话、卷宗内容、分析报告和证据库。此操作无法撤销。',
+      message: '将删除普法咨询及其历史记录、维权对话、卷宗内容、分析报告、证据库和合同审查报告。此操作无法撤销。',
       autoCancel: true,
       primaryButton: {
         value: '取消',
@@ -799,6 +841,7 @@ struct Index {
           this.quickHistory = [];
           this.saveQuickHistory();
           this.caseMessages = [];
+          this.caseAnchorTurn = false;
           this.quickError = '';
           this.caseError = '';
           this.location = '';
@@ -819,6 +862,13 @@ struct Index {
             this.evidenceCount = 0;
           }).catch(() => {
             // Evidence files that fail to delete stay listed until next launch.
+          });
+          // Contract reports keep the contract text, so they go too.
+          ContractReviewService.save(this.abilityContext(), []).then(() => {
+            this.contractReportCount = 0;
+            this.localDataVersion++;
+          }).catch(() => {
+            this.getUIContext().getPromptAction().showToast({ message: '合同审查报告未能删除，请重试', duration: 1800 });
           });
           this.schedulePersist();
         }
@@ -1133,7 +1183,7 @@ struct Index {
       typedPrompt.length > 0 ? typedPrompt : '请分析这份材料中涉及的劳动法律问题。';
     const validationError: string = AiApiClient.validateConfig(this.currentConfig());
     if (validationError.length > 0) {
-      this.quickError = validationError + '，请先前往设置';
+      this.quickError = validationError + CONFIG_HINT;
       return;
     }
     if (!KnowledgeService.isReady()) {
@@ -1166,7 +1216,7 @@ struct Index {
       this.quickAttachment = new FileAttachment();
       this.quickAttachmentError = '';
       this.quickAnchorTurn = true;
-      this.scrollQuickTurnToTop();
+      this.scrollTurnToTop(STREAM_QUICK);
       const apiMessages: ChatMessage[] =
         this.conversationMessages(this.quickSystemPrompt(knowledge), this.quickMessages);
       // No scroller: the answer streams below the question without pulling the
@@ -1200,7 +1250,7 @@ struct Index {
       typedPrompt.length > 0 ? typedPrompt : '请结合这份附件开始梳理案件信息。';
     const validationError: string = AiApiClient.validateConfig(this.currentConfig());
     if (validationError.length > 0) {
-      this.caseError = validationError + '，请先前往设置';
+      this.caseError = validationError + CONFIG_HINT;
       return;
     }
     if (!KnowledgeService.isReady()) {
@@ -1225,20 +1275,21 @@ struct Index {
       this.caseMessage = '';
       this.caseAttachment = new FileAttachment();
       this.caseAttachmentError = '';
-      this.scrollConversationToBottom(this.caseScroller);
+      this.caseAnchorTurn = true;
+      this.scrollTurnToTop(STREAM_CASE);
       const apiMessages: ChatMessage[] =
         this.conversationMessages(this.caseSystemPrompt(knowledge), this.caseMessages);
+      // As in 普法: the answer streams below the question without pulling the
+      // view down.
       const outcome: StreamOutcome =
-        await this.runStream(STREAM_CASE, handle, apiMessages, knowledge.citations, this.caseScroller);
+        await this.runStream(STREAM_CASE, handle, apiMessages, knowledge.citations, undefined);
       if (outcome.text.length > 0 || outcome.reasoning.length > 0) {
         this.caseMessages = this.caseMessages.concat([
           this.assistantMessage(outcome, knowledge.citations)
         ]);
-        this.scrollConversationToBottom(this.caseScroller);
       }
     } catch (error) {
       this.caseError = this.errorMessage(error);
-      this.scrollConversationToBottom(this.caseScroller);
     } finally {
       this.isCaseSending = false;
       if (this.streamHandles[STREAM_CASE] === handle) {
@@ -1260,27 +1311,39 @@ struct Index {
     return requestMessages;
   }
 
-  // Scrolls the latest question to the top of the 普法 conversation.
-  private scrollQuickTurnToTop(): void {
+  // Scrolls the latest question to the top of the 普法 or 维权 conversation.
+  private scrollTurnToTop(kind: number): void {
+    const scroller: Scroller = kind === STREAM_CASE ? this.caseScroller : this.quickScroller;
     setTimeout(() => {
       try {
         const utils = this.getUIContext().getComponentUtils();
-        const scrollTop: number = utils.getRectangleById(QUICK_SCROLL_ID).windowOffset.y;
-        const turnTop: number = utils.getRectangleById(QUICK_TURN_ID).windowOffset.y;
-        const offset: number = this.quickScroller.currentOffset().yOffset +
+        const scrollTop: number =
+          utils.getRectangleById(kind === STREAM_CASE ? CASE_SCROLL_ID : QUICK_SCROLL_ID).windowOffset.y;
+        const turnTop: number =
+          utils.getRectangleById(kind === STREAM_CASE ? CASE_TURN_ID : QUICK_TURN_ID).windowOffset.y;
+        const offset: number = scroller.currentOffset().yOffset +
           this.getUIContext().px2vp(turnTop - scrollTop) - 8;
-        this.quickScroller.scrollTo({
+        scroller.scrollTo({
           xOffset: 0,
           yOffset: Math.max(0, offset),
           animation: { duration: this.reduceMotion ? 0 : 320, curve: Curve.EaseOut }
         });
       } catch (error) {
-        this.scrollConversationToBottom(this.quickScroller);
+        this.scrollConversationToBottom(scroller);
       }
     }, 80);
   }
 
-  private updateQuickJump(): void {
+  private updateJump(kind: number): void {
+    if (kind === STREAM_CASE) {
+      const remaining: number = this.caseContentHeight - this.caseViewportHeight -
+        this.caseScroller.currentOffset().yOffset;
+      const show: boolean = this.caseMessages.length > 0 && remaining > JUMP_BUTTON_DISTANCE;
+      if (show !== this.caseShowJump) {
+        this.caseShowJump = show;
+      }
+      return;
+    }
     const remaining: number = this.quickContentHeight - this.quickViewportHeight -
       this.quickScroller.currentOffset().yOffset;
     const show: boolean = this.quickMessages.length > 0 && remaining > JUMP_BUTTON_DISTANCE;
@@ -1291,20 +1354,20 @@ struct Index {
 
   // Index of the latest user message; that turn is laid out separately so it
   // can fill the viewport.
-  private quickTurnStart(): number {
-    for (let i: number = this.quickMessages.length - 1; i >= 0; i--) {
-      if (this.quickMessages[i].role === ChatRole.USER) {
+  private turnStart(messages: ChatMessage[]): number {
+    for (let i: number = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === ChatRole.USER) {
         return i;
       }
     }
     return 0;
   }
 
-  private quickTurnMinHeight(): number {
-    if (!this.quickAnchorTurn) {
-      return 0;
+  private turnMinHeight(kind: number): number {
+    if (kind === STREAM_CASE) {
+      return this.caseAnchorTurn ? Math.max(0, this.caseViewportHeight - 14 - this.casePinnedHeight - 12) : 0;
     }
-    return Math.max(0, this.quickViewportHeight - 14 - this.quickPinnedHeight - 12);
+    return this.quickAnchorTurn ? Math.max(0, this.quickViewportHeight - 14 - this.quickPinnedHeight - 12) : 0;
   }
 
   private scrollConversationToBottom(scroller: Scroller): void {
@@ -1468,7 +1531,23 @@ struct Index {
     this.evidenceImport = importNow;
     this.evidenceMode = EVIDENCE_MODE_LIST;
     this.sheetKind = 0;
-    this.evidenceOpen = true;
+    this.currentSection = AppSection.CASE;
+    this.headerProgress = 1;
+    // The library reads its starting query when it appears, so leave and
+    // re-enter the page if it is already showing.
+    if (this.rightsTab === RIGHTS_EVIDENCE) {
+      this.rightsTab = RIGHTS_DOSSIER;
+      setTimeout(() => {
+        this.rightsTab = RIGHTS_EVIDENCE;
+      }, 0);
+    } else {
+      this.rightsTab = RIGHTS_EVIDENCE;
+    }
+  }
+
+  private showRights(tab: number): void {
+    this.rightsTab = tab;
+    this.headerProgress = tab === RIGHTS_EVIDENCE ? 1 : 0;
   }
 
   private fillDossier(field: number, value: string): void {
@@ -1491,6 +1570,22 @@ struct Index {
     });
   }
 
+  // Opens 案件 with a reviewed clause and its findings attached, plus the
+  // user's question when they typed one.
+  private askAboutContract(title: string, body: string, question: string = ''): void {
+    this.caseAttachment = new FileAttachment(title, '合同审查结果', body.substring(0, EVIDENCE_TEXT_LIMIT),
+      body.length > EVIDENCE_TEXT_LIMIT);
+    this.caseAttachmentError = '';
+    if (question.trim().length > 0) {
+      this.caseMessage = question.trim();
+    } else if (this.caseMessage.trim().length === 0) {
+      this.caseMessage = '这一条对我有什么影响？我该怎么做？';
+    }
+    this.currentSection = AppSection.CASE;
+    this.showRights(RIGHTS_CHAT);
+    this.scrollConversationToBottom(this.caseScroller);
+  }
+
   // Puts the recognized text into the 案件 composer as an attachment. The
   // attachment flow already treats it as material, not instructions.
   private askWithEvidence(item: EvidenceItem): void {
@@ -1503,8 +1598,8 @@ struct Index {
     if (this.caseMessage.trim().length === 0) {
       this.caseMessage = '请结合这份材料分析：';
     }
-    this.evidenceOpen = false;
     this.currentSection = AppSection.CASE;
+    this.showRights(RIGHTS_CHAT);
     this.scrollConversationToBottom(this.caseScroller);
   }
 
@@ -1678,7 +1773,7 @@ struct Index {
     }
     const validationError: string = AiApiClient.validateConfig(this.currentConfig());
     if (validationError.length > 0) {
-      this.reportError = validationError + '，请先前往设置';
+      this.reportError = validationError + CONFIG_HINT;
       return;
     }
     if (!KnowledgeService.isReady()) {
@@ -1840,26 +1935,20 @@ struct Index {
 
   private sectionTitle(): string {
     if (this.currentSection === AppSection.CASE) {
-      return '案件分析';
+      return '维权';
     }
-    if (this.currentSection === AppSection.DOSSIER) {
-      return '智能卷宗';
-    }
-    if (this.currentSection === AppSection.SETTINGS) {
-      return '模型设置';
+    if (this.currentSection === AppSection.CONTRACT) {
+      return '合同体检';
     }
     return '劳动权益助手';
   }
 
   private sectionSubtitle(): string {
     if (this.currentSection === AppSection.CASE) {
-      return '分阶段梳理事实与法律风险';
+      return '梳理事实、整理卷宗、管理证据';
     }
-    if (this.currentSection === AppSection.DOSSIER) {
-      return '整理事实，形成清晰的分析报告';
-    }
-    if (this.currentSection === AppSection.SETTINGS) {
-      return '安全连接你选择的模型服务';
+    if (this.currentSection === AppSection.CONTRACT) {
+      return '逐条检查劳动合同里的红线条款';
     }
     return '懂法律，更懂你的难处';
   }
@@ -1881,9 +1970,9 @@ struct Index {
     const t: ThemeColors = this.cx;
     return {
       barWidth: {
-        smallWidth: 344,
-        mediumWidth: 420,
-        largeWidth: 420
+        smallWidth: 268,
+        mediumWidth: 330,
+        largeWidth: 330
       },
       barSideMargin: 20,
       barBottomMargin: 30,
@@ -1898,8 +1987,33 @@ struct Index {
         materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
       },
       thermoCtrl: true,
-      barOpacity: this.isDark ? 0.55 : 0.92
+      barOpacity: this.isDark ? 0.55 : 0.92,
+      miniBar: {
+        miniBarBuilder: (): void => {
+          this.MineButton()
+        },
+        miniBarWidth: { smallWidth: 64, mediumWidth: 64, largeWidth: 64 },
+        miniBarStyle: HdsBarStyle.COLLAPSE
+      }
     };
+  }
+
+  // 我的, the round control beside the tab bar (HdsTabs mini bar).
+  @Builder
+  private MineButton() {
+    Column({ space: 3 }) {
+      this.Icon({ res: $r('app.media.ic_person'), size: 21, color: this.cx.muted })
+      Text('我的').fontSize(11).fontColor(this.cx.muted)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .accessibilityText('我的')
+    .clickEffect(this.reduceMotion ? null : { level: ClickEffectLevel.LIGHT, scale: 0.94 })
+    .onClick(() => {
+      this.quickQuestionController.stopEditing();
+      this.mineOpen = true;
+    })
   }
 
   private keyboardHiddenStyle(): HdsTabsFloatingStyle {
@@ -2845,13 +2959,15 @@ struct Index {
   }
 
   @Builder
-  private EvidenceCover() {
+  private EvidencePane() {
     EvidenceLibrary({
       cx: this.cx,
       isDark: this.isDark,
       mode: $evidenceMode,
+      embedded: true,
+      bottomInset: this.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,
       onClose: () => {
-        this.evidenceOpen = false;
+        this.showRights(RIGHTS_CHAT);
       },
       onCountChange: (count: number) => {
         this.evidenceCount = count;
@@ -2866,6 +2982,116 @@ struct Index {
       initialQuery: this.evidenceQuery,
       initialCategory: this.evidenceCategory,
       initialImport: this.evidenceImport
+    })
+  }
+
+  @Builder
+  private RightsSegment(label: string, tab: number) {
+    Text(label)
+      .fontSize(13.5)
+      .fontWeight(this.rightsTab === tab ? FontWeight.Bold : FontWeight.Regular)
+      .fontColor(this.rightsTab === tab ? this.cx.text : this.cx.muted)
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
+      .height(32)
+      .borderRadius(10)
+      .backgroundColor(this.rightsTab === tab ? this.cx.surface : Color.Transparent)
+      .shadow(this.rightsTab === tab ? { radius: 6, color: this.cx.softShadow, offsetY: 1 } :
+        { radius: 0, color: Color.Transparent, offsetY: 0 })
+      .animation({ duration: this.reduceMotion ? 0 : 160, curve: Curve.EaseOut })
+      .accessibilityText(label)
+      .onClick(() => {
+        this.showRights(tab);
+      })
+  }
+
+  // 维权: the case conversation, the dossier it fills in, and the evidence
+  // library, as three pages of one section.
+  @Builder
+  private RightsPage() {
+    Column() {
+      Row() {
+        this.RightsSegment('梳理', RIGHTS_CHAT)
+        this.RightsSegment('卷宗 ' + this.caseProgress.toString() + '%', RIGHTS_DOSSIER)
+        this.RightsSegment(this.evidenceCount > 0 ? '证据 ' + this.evidenceCount.toString() : '证据', RIGHTS_EVIDENCE)
+      }
+      .padding(3)
+      .backgroundColor(this.cx.surface2)
+      .borderRadius(12)
+      .margin({ left: 16, right: 16, top: 10, bottom: 2 })
+      Column() {
+        if (this.rightsTab === RIGHTS_DOSSIER) {
+          this.DossierPage()
+        } else if (this.rightsTab === RIGHTS_EVIDENCE) {
+          this.EvidencePane()
+        } else {
+          this.CaseChat()
+        }
+      }
+      .layoutWeight(1)
+      .width('100%')
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  // 我的: settings, opened from the round button beside the tab bar.
+  @Builder
+  private MineCover() {
+    Column() {
+      Row({ space: 12 }) {
+        Text('‹')
+          .fontSize(24)
+          .fontColor(this.cx.gold)
+          .textAlign(TextAlign.Center)
+          .width(40)
+          .height(40)
+          .backgroundColor(this.cx.tint)
+          .borderRadius(20)
+          .accessibilityText('返回')
+          .onClick(() => {
+            this.mineOpen = false;
+          })
+        Column({ space: 3 }) {
+          Text('我的').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.cx.text)
+          Text('模型服务、外观与本机数据').fontSize(11.5).fontColor(this.cx.muted)
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 52, bottom: 4 })
+      this.SettingsPage()
+    }
+    .width('100%')
+    .height('100%')
+    .linearGradient({
+      angle: 180,
+      colors: [[this.cx.bgTop, 0.0], [this.cx.bgBottom, 1.0]]
+    })
+  }
+
+  @Builder
+  private ContractPane() {
+    ContractReview({
+      cx: this.cx,
+      isDark: this.isDark,
+      mode: $contractMode,
+      embedded: true,
+      bottomInset: this.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,
+      dataVersion: this.localDataVersion,
+      onCountChange: (count: number) => {
+        this.contractReportCount = count;
+      },
+      baseUrl: this.baseUrl,
+      modelName: this.modelName,
+      apiKey: this.apiKey,
+      defaultCity: this.location,
+      onClose: () => {
+      },
+      onAsk: (title: string, body: string, question: string) => {
+        this.askAboutContract(title, body, question);
+      }
     })
   }
 
@@ -3283,7 +3509,7 @@ struct Index {
   @Builder
   private StreamingAnswer(kind: number) {
     Row({ space: 8 }) {
-      if (kind !== STREAM_QUICK) {
+      if (kind === STREAM_REPORT) {
         Column() {
           this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
         }
@@ -3313,14 +3539,14 @@ struct Index {
         }, (segment: AnswerSegment, index: number) => index.toString() + '_' + segment.citationIndex.toString()
           + '_' + segment.text.length.toString())
       }
-        .fontSize(kind === STREAM_QUICK ? 15.5 : 15)
-        .lineHeight(kind === STREAM_QUICK ? 26 : 24)
+        .fontSize(kind !== STREAM_REPORT ? 15.5 : 15)
+        .lineHeight(kind !== STREAM_REPORT ? 26 : 24)
         .fontColor(this.cx.text)
         .layoutWeight(1)
-        .padding(kind === STREAM_QUICK ? { left: 2, right: 2, top: 2, bottom: 2 } : 13)
-        .backgroundColor(kind === STREAM_QUICK ? Color.Transparent : this.cx.surface)
+        .padding(kind !== STREAM_REPORT ? { left: 2, right: 2, top: 2, bottom: 2 } : 13)
+        .backgroundColor(kind !== STREAM_REPORT ? Color.Transparent : this.cx.surface)
         .borderRadius({ topLeft: 6, topRight: 18, bottomLeft: 18, bottomRight: 18 })
-        .border({ width: kind === STREAM_QUICK ? 0 : 1, color: this.cx.line })
+        .border({ width: kind !== STREAM_REPORT ? 0 : 1, color: this.cx.line })
     }
     .width('100%')
     .alignItems(VerticalAlign.Top)
@@ -3344,6 +3570,12 @@ struct Index {
     .justifyContent(FlexAlign.Center)
   }
 
+  // Errors the user fixes in 我的: no model configured, or the service
+  // rejected the key. Network, index and permission errors are not.
+  private needsModelSettings(message: string): boolean {
+    return message.endsWith(CONFIG_HINT) || message.includes('认证失败') || message.includes('接口或模型不存在');
+  }
+
   @Builder
   private ErrorHint(message: string) {
     Row() {
@@ -3352,15 +3584,17 @@ struct Index {
         .lineHeight(18)
         .fontColor(this.cx.danger)
         .layoutWeight(1)
-      Button('去设置')
-        .fontSize(11)
-        .fontColor(this.cx.onBrand)
-        .backgroundColor(this.cx.brand)
-        .height(32)
-        .borderRadius(10)
-        .onClick(() => {
-          this.currentSection = AppSection.SETTINGS;
-        })
+      if (this.needsModelSettings(message)) {
+        Button('去「我的」')
+          .fontSize(11)
+          .fontColor(this.cx.onBrand)
+          .backgroundColor(this.cx.brand)
+          .height(32)
+          .borderRadius(10)
+          .onClick(() => {
+            this.mineOpen = true;
+          })
+      }
     }
     .width('100%')
     .padding(10)
@@ -3550,10 +3784,10 @@ struct Index {
     .shadow({ radius: 18, color: this.cx.softShadow, offsetY: 6 })
   }
 
-  // Composer pinned above the tab bar (or the keyboard) once a 普法
-  // conversation has started, so follow-ups never need a scroll to the end.
+  // Composer pinned above the tab bar (or the keyboard) in a 普法 or 维权
+  // conversation, so follow-ups never need a scroll to the end.
   @Builder
-  private PinnedComposer() {
+  private PinnedComposer(kind: number) {
     Column() {
       Column()
         .width('100%')
@@ -3561,11 +3795,20 @@ struct Index {
         .linearGradient({ angle: 180, colors: [['#00' + this.cx.bgBottom.substring(1), 0.0], [this.cx.bgBottom, 1.0]] })
         .hitTestBehavior(HitTestMode.Transparent)
       Column() {
-        if (this.quickAttachment.name.length > 0) {
-          this.AttachmentChip(this.quickAttachment, false)
-        }
-        if (this.quickAttachmentError.length > 0) {
-          this.AttachmentError(this.quickAttachmentError)
+        if (kind === STREAM_CASE) {
+          if (this.caseAttachment.name.length > 0) {
+            this.AttachmentChip(this.caseAttachment, true)
+          }
+          if (this.caseAttachmentError.length > 0) {
+            this.AttachmentError(this.caseAttachmentError)
+          }
+        } else {
+          if (this.quickAttachment.name.length > 0) {
+            this.AttachmentChip(this.quickAttachment, false)
+          }
+          if (this.quickAttachmentError.length > 0) {
+            this.AttachmentError(this.quickAttachmentError)
+          }
         }
         Row({ space: 6 }) {
           Button({ type: ButtonType.Circle, stateEffect: true }) {
@@ -3574,34 +3817,56 @@ struct Index {
           .width(36)
           .height(36)
           .backgroundColor(this.cx.surface2)
-          .enabled(!this.isAttachmentPicking && !this.isQuickSending)
+          .accessibilityText(kind === STREAM_CASE ? '添加案件材料' : '添加附件')
+          .enabled(!this.isAttachmentPicking && !(kind === STREAM_CASE ? this.isCaseSending : this.isQuickSending))
           .onClick(() => {
-            this.openAttachmentSheet(false);
+            this.openAttachmentSheet(kind === STREAM_CASE);
           })
-          TextArea({
-            text: this.question,
-            placeholder: '继续追问…',
-            controller: this.quickQuestionController
-          })
-            .layoutWeight(1)
-            .constraintSize({ minHeight: 38, maxHeight: 100 })
-            .fontSize(15)
-            .fontColor(this.cx.text)
-            .placeholderColor(this.cx.placeholder)
-            .caretColor(this.cx.gold)
-            .selectedBackgroundColor(this.cx.selection)
-            .backgroundColor(Color.Transparent)
-            .borderWidth(0)
-            .padding({ left: 4, right: 4, top: 8, bottom: 8 })
-            .onChange((value: string) => {
-              this.question = value;
+          if (kind === STREAM_CASE) {
+            TextArea({
+              text: this.caseMessage,
+              placeholder: this.caseMessages.length > 0 ? '补充案情或追问…' : '从事情的起因开始说…',
+              controller: this.caseMessageController
             })
+              .layoutWeight(1)
+              .constraintSize({ minHeight: 38, maxHeight: 100 })
+              .fontSize(15)
+              .fontColor(this.cx.text)
+              .placeholderColor(this.cx.placeholder)
+              .caretColor(this.cx.gold)
+              .selectedBackgroundColor(this.cx.selection)
+              .backgroundColor(Color.Transparent)
+              .borderWidth(0)
+              .padding({ left: 4, right: 4, top: 8, bottom: 8 })
+              .onChange((value: string) => {
+                this.caseMessage = value;
+              })
+          } else {
+            TextArea({
+              text: this.question,
+              placeholder: '继续追问…',
+              controller: this.quickQuestionController
+            })
+              .layoutWeight(1)
+              .constraintSize({ minHeight: 38, maxHeight: 100 })
+              .fontSize(15)
+              .fontColor(this.cx.text)
+              .placeholderColor(this.cx.placeholder)
+              .caretColor(this.cx.gold)
+              .selectedBackgroundColor(this.cx.selection)
+              .backgroundColor(Color.Transparent)
+              .borderWidth(0)
+              .padding({ left: 4, right: 4, top: 8, bottom: 8 })
+              .onChange((value: string) => {
+                this.question = value;
+              })
+          }
           // 本地法规检索 is always on; a small mark keeps that visible.
           Column() {
             this.Icon({ res: $r('app.media.ic_book'), size: 14, color: this.cx.ok })
           }
           .margin({ bottom: 11 })
-          if (this.isQuickSending) {
+          if (kind === STREAM_CASE ? this.isCaseSending : this.isQuickSending) {
             Button({ type: ButtonType.Circle, stateEffect: true }) {
               this.Icon({ res: $r('app.media.ic_stop'), size: 18, color: this.cx.onGold })
             }
@@ -3610,7 +3875,7 @@ struct Index {
             .backgroundColor(this.cx.gold)
             .accessibilityText('停止生成')
             .onClick(() => {
-              this.stopStream(STREAM_QUICK);
+              this.stopStream(kind);
             })
           } else {
             Button({ type: ButtonType.Circle, stateEffect: true }) {
@@ -3618,11 +3883,16 @@ struct Index {
             }
             .width(36)
             .height(36)
-            .backgroundColor(this.canSendQuick() ? this.cx.gold : this.cx.surface2)
-            .enabled(this.canSendQuick())
+            .backgroundColor((kind === STREAM_CASE ? this.canSendCase() : this.canSendQuick()) ?
+              this.cx.gold : this.cx.surface2)
+            .enabled(kind === STREAM_CASE ? this.canSendCase() : this.canSendQuick())
             .accessibilityText('发送')
             .onClick(() => {
-              this.sendQuickQuestion();
+              if (kind === STREAM_CASE) {
+                this.sendCaseMessage();
+              } else {
+                this.sendQuickQuestion();
+              }
             })
           }
         }
@@ -3646,12 +3916,16 @@ struct Index {
     }
     .width('100%')
     .onAreaChange((oldValue: Area, newValue: Area) => {
-      this.quickPinnedHeight = newValue.height as number;
+      if (kind === STREAM_CASE) {
+        this.casePinnedHeight = newValue.height as number;
+      } else {
+        this.quickPinnedHeight = newValue.height as number;
+      }
     })
   }
 
   @Builder
-  private JumpToLatest() {
+  private JumpToLatest(kind: number) {
     Button({ type: ButtonType.Circle, stateEffect: true }) {
       this.Icon({ res: $r('app.media.ic_arrow_down'), size: 18, color: this.cx.text })
     }
@@ -3661,11 +3935,12 @@ struct Index {
     .border({ width: 1, color: this.cx.line })
     .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
     .accessibilityText('回到最新')
-    .margin({ right: 18, bottom: this.quickPinnedHeight + 10 })
+    .margin({ right: 18, bottom: (kind === STREAM_CASE ? this.casePinnedHeight : this.quickPinnedHeight) + 10 })
     .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
       .animation({ duration: this.reduceMotion ? 0 : 160 }))
     .onClick(() => {
-      this.quickScroller.scrollEdge(Edge.Bottom, { velocity: 1600 });
+      // No fling velocity: on a long conversation it can stop short of the end.
+      (kind === STREAM_CASE ? this.caseScroller : this.quickScroller).scrollEdge(Edge.Bottom);
     })
   }
 
@@ -3674,9 +3949,9 @@ struct Index {
     Stack({ alignContent: Alignment.BottomEnd }) {
       this.QuickScroll()
       if (this.quickMessages.length > 0) {
-        this.PinnedComposer()
+        this.PinnedComposer(STREAM_QUICK)
         if (this.quickShowJump) {
-          this.JumpToLatest()
+          this.JumpToLatest(STREAM_QUICK)
         }
       }
     }
@@ -3685,7 +3960,7 @@ struct Index {
   }
 
   @Builder
-  private QuickMessage(message: ChatMessage) {
+  private FlatMessage(message: ChatMessage) {
     Column({ space: 10 }) {
       if (message.role === ChatRole.ASSISTANT && this.showReasoning && message.reasoning.length > 0) {
         this.SavedReasoning(message, true)
@@ -3736,14 +4011,14 @@ struct Index {
           this.NoticeCard()
         } else {
           Column({ space: 10 }) {
-            ForEach(this.quickMessages.slice(0, this.quickTurnStart()), (message: ChatMessage) => {
-              this.QuickMessage(message)
+            ForEach(this.quickMessages.slice(0, this.turnStart(this.quickMessages)), (message: ChatMessage) => {
+              this.FlatMessage(message)
             })
             // The latest turn; while anchored it is at least a screen tall so
             // its question can scroll to the top.
             Column({ space: 10 }) {
-              ForEach(this.quickMessages.slice(this.quickTurnStart()), (message: ChatMessage) => {
-                this.QuickMessage(message)
+              ForEach(this.quickMessages.slice(this.turnStart(this.quickMessages)), (message: ChatMessage) => {
+                this.FlatMessage(message)
               })
               if (this.isQuickSending) {
                 if (this.quickStreaming.length > 0 || (this.showReasoning && this.quickReasoning.length > 0)) {
@@ -3758,7 +4033,7 @@ struct Index {
             }
             .id(QUICK_TURN_ID)
             .width('100%')
-            .constraintSize({ minHeight: this.quickTurnMinHeight() })
+            .constraintSize({ minHeight: this.turnMinHeight(STREAM_QUICK) })
           }
           .width('100%')
         }
@@ -3768,7 +4043,7 @@ struct Index {
         bottom: this.quickMessages.length > 0 ? this.quickPinnedHeight + 12 : CONTENT_BOTTOM })
       .onAreaChange((oldValue: Area, newValue: Area) => {
         this.quickContentHeight = newValue.height as number;
-        this.updateQuickJump();
+        this.updateJump(STREAM_QUICK);
       })
     }
     .id(QUICK_SCROLL_ID)
@@ -3781,7 +4056,7 @@ struct Index {
     })
     .onDidScroll(() => {
       this.updateHeaderForScroll(this.quickScroller);
-      this.updateQuickJump();
+      this.updateJump(STREAM_QUICK);
     })
     .gesture(
       PanGesture({ direction: PanDirection.Right, distance: 12 })
@@ -3839,7 +4114,7 @@ struct Index {
   }
 
   @Builder
-  private CaseChat() {
+  private CaseScroll() {
     Scroll(this.caseScroller) {
       Column({ space: 14 }) {
         Row({ space: 13 }) {
@@ -3850,7 +4125,7 @@ struct Index {
               .fontWeight(FontWeight.Bold)
               .fontColor(this.cx.text)
               .width('100%')
-            Text('对话中我会逐步提取六项要素，达 60% 可在卷宗页生成报告。')
+            Text('对话中我会逐步提取六项要素，达 60% 可在「卷宗」页生成报告。')
               .fontSize(11)
               .lineHeight(16)
               .fontColor(this.cx.muted)
@@ -3873,113 +4148,24 @@ struct Index {
         .borderRadius(18)
         .border({ width: 1, color: this.cx.line })
 
-        Row({ space: 11 }) {
-          Column() {
-            this.Icon({ res: $r('app.media.ic_folder'), size: 18, color: this.cx.gold })
-          }
-          .width(38)
-          .height(38)
-          .justifyContent(FlexAlign.Center)
-          .backgroundColor(this.citationChipBg())
-          .borderRadius(12)
-          Column({ space: 3 }) {
-            Text('证据库')
-              .fontSize(14)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.cx.text)
-            Text(this.evidenceCount > 0 ? this.evidenceCount.toString() + ' 份材料 · 扫描或导入后自动识别文字' :
-              '扫描合同、工资条，或导入聊天截图')
-              .fontSize(11)
-              .fontColor(this.cx.muted)
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-          Text('›')
-            .fontSize(22)
-            .fontColor(this.cx.goldDeep)
-        }
-        .width('100%')
-        .padding(13)
-        .backgroundColor(this.cx.surface)
-        .borderRadius(16)
-        .border({ width: 1, color: this.cx.line })
-        .accessibilityText('打开证据库')
-        .onClick(() => {
-          this.openEvidence('', '', false);
-        })
-        Button() {
-          Row({ space: 9 }) {
-            this.Icon({ res: $r('app.media.ic_doc'), size: 18, color: this.cx.goldDeep })
-            Column({ space: 3 }) {
-              Text(this.checklistFloatBusy ?
-                (this.checklistFloatActive ? '正在关闭闪控窗…' : '正在开启闪控窗…') :
-                (this.checklistFloatActive ? '闪控窗已开启' : '悬浮查看待补事项'))
-                .fontSize(14)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.cx.text)
-              Text(this.checklistFloatActive ? '切到桌面或其他应用即可查看 · 点击此处关闭' :
-                '切换到聊天或工资记录时，也能查看六项材料状态')
-                .fontSize(11)
-                .fontColor(this.cx.muted)
-            }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
-            Text(this.checklistFloatBusy ? '…' : (this.checklistFloatActive ? '✓' : '›'))
-              .fontSize(22)
-              .fontColor(this.checklistFloatActive ? this.cx.ok : this.cx.goldDeep)
-          }
+
+        // Opening prompt, laid flat like the answers.
+        Text('请从事情的起因开始描述。暂时不确定的信息也可以留空，我会继续追问。')
+          .fontSize(15.5)
+          .lineHeight(26)
+          .fontColor(this.cx.text)
           .width('100%')
-        }
-        .width('100%')
-        .padding(13)
-        .backgroundColor(this.checklistFloatActive ? this.cx.okBg : this.cx.surface)
-        .borderRadius(16)
-        .border({ width: 1, color: this.checklistFloatActive ? this.cx.ok : this.cx.line })
-        .enabled(!this.checklistFloatBusy)
-        .onClick(() => {
-          this.toggleFloatChecklist();
-        })
-        if (this.checklistFloatError.length > 0) {
-          this.ErrorHint(this.checklistFloatError)
-        }
+          .padding({ left: 2, right: 2 })
 
-        Row({ space: 8 }) {
-          Column() {
-            this.Icon({ res: $r('app.media.ic_scale'), size: 16, color: this.cx.glow })
-          }
-          .width(28)
-          .height(28)
-          .justifyContent(FlexAlign.Center)
-          .backgroundColor(this.cx.brandStrong)
-          .borderRadius(9)
-          Text('请从事情的起因开始描述。暂时不确定的信息也可以留空，我会继续追问。')
-            .fontSize(15)
-            .lineHeight(24)
-            .fontColor(this.cx.text)
-            .layoutWeight(1)
-            .padding(13)
-            .backgroundColor(this.cx.surface)
-            .borderRadius({ topLeft: 6, topRight: 18, bottomLeft: 18, bottomRight: 18 })
-            .border({ width: 1, color: this.cx.line })
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Top)
-
-        if (this.caseMessages.length > 0) {
+        Column({ space: 10 }) {
+          ForEach(this.caseMessages.slice(0, this.turnStart(this.caseMessages)), (message: ChatMessage) => {
+            this.FlatMessage(message)
+          })
+          // The latest turn; while anchored it is at least a screen tall so its
+          // question can scroll to the top.
           Column({ space: 10 }) {
-            ForEach(this.caseMessages, (message: ChatMessage) => {
-              Column({ space: 10 }) {
-                if (message.role === ChatRole.ASSISTANT && this.showReasoning && message.reasoning.length > 0) {
-                  this.SavedReasoning(message)
-                }
-                this.ChatBubble(message)
-                if (message.role === ChatRole.ASSISTANT) {
-                  this.AnswerActions(message.content, message.citations, false)
-                  this.CitationPanel(message.citations)
-                }
-              }
-              .width('100%')
-              .transition(TransitionEffect.OPACITY.animation({ duration: this.reduceMotion ? 0 : 160 }))
+            ForEach(this.caseMessages.slice(this.turnStart(this.caseMessages)), (message: ChatMessage) => {
+              this.FlatMessage(message)
             })
             if (this.isCaseSending) {
               if (this.caseStreaming.length > 0 || (this.showReasoning && this.caseReasoning.length > 0)) {
@@ -3987,96 +4173,51 @@ struct Index {
               } else {
                 this.SendingIndicator('正在梳理案件信息…')
               }
-              this.StopButton(STREAM_CASE)
+            }
+            if (this.caseError.length > 0) {
+              this.ErrorHint(this.caseError)
             }
           }
+          .id(CASE_TURN_ID)
           .width('100%')
-        }
-
-        if (this.caseError.length > 0) {
-          this.ErrorHint(this.caseError)
-        }
-
-        Column() {
-          if (this.caseAttachment.name.length > 0) {
-            this.AttachmentChip(this.caseAttachment, true)
-          }
-          TextArea({
-            text: this.caseMessage,
-            placeholder: '输入案件经过，或上传 TXT / MD / DOCX 文件…',
-            controller: this.caseMessageController
-          })
-            .height(112)
-            .fontSize(15)
-            .fontColor(this.cx.text)
-            .placeholderColor(this.cx.placeholder)
-            .caretColor(this.cx.gold)
-            .selectedBackgroundColor(this.cx.selection)
-            .backgroundColor(this.cx.surface2)
-            .borderRadius(14)
-            .border({ width: 1, color: this.cx.line })
-            .onChange((value: string) => {
-              this.caseMessage = value;
-            })
-          Row({ space: 10 }) {
-            Button() {
-              Row({ space: 6 }) {
-                this.Icon({ res: $r('app.media.ic_plus'), size: 15, color: this.cx.brand })
-                Text('案件材料')
-                  .fontSize(13)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.cx.brand)
-              }
-            }
-            .height(40)
-            .padding({ left: 13, right: 15 })
-            .backgroundColor(this.cx.tint)
-            .borderRadius(12)
-            .enabled(!this.isAttachmentPicking && !this.isCaseSending)
-            .onClick(() => {
-              this.openAttachmentSheet(true);
-            })
-            Blank()
-            Button() {
-              Row({ space: 6 }) {
-                Text('发送')
-                  .fontSize(14)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.cx.onBrand)
-                this.Icon({ res: $r('app.media.ic_send'), size: 15, color: this.cx.onBrand })
-              }
-            }
-            .height(40)
-            .padding({ left: 16, right: 16 })
-            .backgroundColor(this.cx.brand)
-            .borderRadius(12)
-            .enabled(this.canSendCase())
-            .onClick(() => {
-              this.sendCaseMessage();
-            })
-          }
-          .width('100%')
-          .margin({ top: 10 })
-          if (this.caseAttachmentError.length > 0) {
-            this.AttachmentError(this.caseAttachmentError)
-          }
+          .constraintSize({ minHeight: this.turnMinHeight(STREAM_CASE) })
         }
         .width('100%')
-        .padding(14)
-        .backgroundColor(this.cx.surface)
-        .borderRadius(18)
-        .border({ width: 1, color: this.cx.line })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 14, bottom: CONTENT_BOTTOM })
+      .padding({ left: 16, right: 16, top: 14, bottom: this.casePinnedHeight + 12 })
+      .onAreaChange((oldValue: Area, newValue: Area) => {
+        this.caseContentHeight = newValue.height as number;
+        this.updateJump(STREAM_CASE);
+      })
     }
+    .id(CASE_SCROLL_ID)
     .scrollBar(BarState.Off)
     .width('100%')
     .height('100%')
     .edgeEffect(EdgeEffect.Spring)
+    .onAreaChange((oldValue: Area, newValue: Area) => {
+      this.caseViewportHeight = newValue.height as number;
+    })
     .onDidScroll(() => {
       this.updateHeaderForScroll(this.caseScroller);
+      this.updateJump(STREAM_CASE);
     })
+  }
+
+  // 维权 · 梳理: the case conversation, laid out like 普法 with the composer
+  // pinned at the bottom.
+  @Builder
+  private CaseChat() {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      this.CaseScroll()
+      this.PinnedComposer(STREAM_CASE)
+      if (this.caseShowJump) {
+        this.JumpToLatest(STREAM_CASE)
+      }
+    }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder
@@ -4166,6 +4307,42 @@ struct Index {
         .backgroundColor(this.cx.surface)
         .borderRadius(18)
         .border({ width: 1, color: this.cx.line })
+
+        Button() {
+          Row({ space: 9 }) {
+            this.Icon({ res: $r('app.media.ic_doc'), size: 18, color: this.cx.goldDeep })
+            Column({ space: 3 }) {
+              Text(this.checklistFloatBusy ?
+                (this.checklistFloatActive ? '正在关闭闪控窗…' : '正在开启闪控窗…') :
+                (this.checklistFloatActive ? '闪控窗已开启' : '悬浮查看待补事项'))
+                .fontSize(14)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(this.cx.text)
+              Text(this.checklistFloatActive ? '切到桌面或其他应用即可查看 · 点击此处关闭' :
+                '切换到聊天或工资记录时，也能查看六项材料状态')
+                .fontSize(11)
+                .fontColor(this.cx.muted)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text(this.checklistFloatBusy ? '…' : (this.checklistFloatActive ? '✓' : '›'))
+              .fontSize(22)
+              .fontColor(this.checklistFloatActive ? this.cx.ok : this.cx.goldDeep)
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .padding(13)
+        .backgroundColor(this.checklistFloatActive ? this.cx.okBg : this.cx.surface)
+        .borderRadius(16)
+        .border({ width: 1, color: this.checklistFloatActive ? this.cx.ok : this.cx.line })
+        .enabled(!this.checklistFloatBusy)
+        .onClick(() => {
+          this.toggleFloatChecklist();
+        })
+        if (this.checklistFloatError.length > 0) {
+          this.ErrorHint(this.checklistFloatError)
+        }
 
         Column({ space: 12 }) {
           Text('基本信息')
@@ -4474,9 +4651,11 @@ struct Index {
         Column({ space: 10 }) {
           this.SettingCardHeader($r('app.media.ic_folder'), '本机记录')
           this.SettingRow('普法咨询', this.quickHistory.length.toString() + ' 段历史')
-          this.SettingRow('案件对话', this.caseMessages.length.toString() + ' 条消息')
+          this.SettingRow('维权对话', this.caseMessages.length.toString() + ' 条消息')
           this.SettingRow('卷宗完整度', this.caseProgress.toString() + '%')
-          Text('对话和卷宗仅保存在本机应用沙箱中，重新打开应用后会自动恢复。')
+          this.SettingRow('证据库', this.evidenceCount.toString() + ' 份材料')
+          this.SettingRow('合同审查', this.contractReportCount.toString() + ' 份报告')
+          Text('以上记录仅保存在本机应用沙箱中，重新打开应用后会自动恢复。')
             .fontSize(10.5)
             .lineHeight(15)
             .fontColor(this.cx.muted)
@@ -4555,7 +4734,7 @@ struct Index {
         .border({ width: 1, color: this.cx.line })
 
         Column({ space: 12 }) {
-          this.SettingCardHeader($r('app.media.ic_shield'), '外观')
+          this.SettingCardHeader($r('app.media.ic_theme'), '外观')
           Row() {
             this.ThemeSeg('跟随系统', 0)
             this.ThemeSeg('浅色', 1)
@@ -4594,7 +4773,8 @@ struct Index {
 
         Column() {
           this.SettingCardHeader($r('app.media.ic_shield'), '隐私说明')
-          Text('用户主动发送咨询时，问题、选中的附件内容和相关法条片段才会发给你配置的模型服务商；本地检索全程不联网。')
+          Text('用户主动发送咨询时，问题、选中的附件内容和相关法条片段才会发给你配置的模型服务商；本地检索全程不联网。' +
+            '证据图片的识别和合同的规则审查都在手机上完成；开启合同 AI 审查时，只发送替换掉个人信息后的条款文字。')
             .fontSize(12)
             .lineHeight(19)
             .fontColor(this.cx.muted)
@@ -4659,17 +4839,13 @@ struct Index {
           }
           .tabBar(this.NavItem($r('app.media.ic_consult'), '普法', AppSection.QUICK))
           TabContent() {
-            this.CaseChat()
+            this.RightsPage()
           }
-          .tabBar(this.NavItem($r('app.media.ic_scale'), '案件', AppSection.CASE))
+          .tabBar(this.NavItem($r('app.media.ic_scale'), '维权', AppSection.CASE))
           TabContent() {
-            this.DossierPage()
+            this.ContractPane()
           }
-          .tabBar(this.NavItem($r('app.media.ic_folder'), '卷宗', AppSection.DOSSIER))
-          TabContent() {
-            this.SettingsPage()
-          }
-          .tabBar(this.NavItem($r('app.media.ic_gear'), '设置', AppSection.SETTINGS))
+          .tabBar(this.NavItem($r('app.media.ic_shield'), '合同', AppSection.CONTRACT))
         }
         .barMode(BarMode.Fixed)
         .barHeight(this.keyboardVisible ? 0 : 64)
@@ -4680,7 +4856,10 @@ struct Index {
         .animationDuration(220)
         .onChange((index: number) => {
           this.currentSection = index as AppSection;
-          this.headerProgress = 0;
+          // 合同 and 证据 scroll inside their own components, so the header
+          // stays collapsed there.
+          this.headerProgress = index === AppSection.CONTRACT ||
+            (index === AppSection.CASE && this.rightsTab === RIGHTS_EVIDENCE) ? 1 : 0;
         })
         .layoutWeight(1)
         .width('100%')
@@ -4709,20 +4888,20 @@ struct Index {
       if (this.drawerVisible) {
         this.HistoryDrawer()
       }
+      // Carries the 我的 cover: one component cannot hold both it and the
+      // sheets bound above.
+      Column()
+        .width(0)
+        .height(0)
+        .bindContentCover(this.mineOpen, this.MineCover(), {
+          modalTransition: ModalTransition.DEFAULT,
+          onWillDismiss: (action: DismissContentCoverAction) => {
+            action.dismiss();
+            this.mineOpen = false;
+          }
+        })
     }
     .width('100%')
     .height('100%')
-    .bindContentCover(this.evidenceOpen, this.EvidenceCover(), {
-      modalTransition: ModalTransition.DEFAULT,
-      onWillDismiss: (action: DismissContentCoverAction) => {
-        // Back from a detail page or the scanner returns to the list first.
-        if (this.evidenceMode !== EVIDENCE_MODE_LIST) {
-          this.evidenceMode = EVIDENCE_MODE_LIST;
-          return;
-        }
-        action.dismiss();
-        this.evidenceOpen = false;
-      }
-    })
   }
 }

@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { ErrorEvent, MessageEvents, worker } from '@kit.ArkTS';
 import { KnowledgeResult, LawCitation } from '../models/AppModels';
 import {
+  KNOWLEDGE_ARTICLES,
   KNOWLEDGE_LOAD,
   KNOWLEDGE_SEARCH,
   KnowledgeRequest,
@@ -59,6 +60,19 @@ export class KnowledgeService {
     request.limit = limit;
     const response: KnowledgeResponse = await KnowledgeService.post(request, []);
     return new KnowledgeResult(response.context, response.citations);
+  }
+
+  // Exact articles by title and article number, e.g. for the law references a
+  // contract review cites. Each key is title, article and the label to return
+  // as the citation id, joined by \u0000; missing articles are left out.
+  static async articles(keys: string[]): Promise<LawCitation[]> {
+    if (!KnowledgeService.ready || keys.length === 0) {
+      return [];
+    }
+    const request: KnowledgeRequest = new KnowledgeRequest(KnowledgeService.nextId++, KNOWLEDGE_ARTICLES);
+    request.articleKeys = keys;
+    const response: KnowledgeResponse = await KnowledgeService.post(request, []);
+    return response.citations;
   }
 
   static validateAnswer(answer: string, citations: LawCitation[]): string {

@@ -1,8 +1,9 @@
+// Tabs of the floating bar. 我的 is not a tab: it is the separate round
+// button beside the bar and opens as its own page.
 export enum AppSection {
   QUICK = 0,
   CASE = 1,
-  DOSSIER = 2,
-  SETTINGS = 3
+  CONTRACT = 2
 }
 
 export enum ChatRole {

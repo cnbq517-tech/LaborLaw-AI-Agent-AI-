@@ -1,0 +1,40 @@
+{
+  "note": "Official texts added on top of the full corpus build, for laws the contract review rules cite. Files are the 北大法宝 TXT exports.",
+  "documents": [
+    {
+      "file": "中华人民共和国妇女权益保障法(2022修订)(FBM-CLI.1.5137689).txt",
+      "title": "中华人民共和国妇女权益保障法（2022修订）",
+      "category": "法律",
+      "status": "现行有效",
+      "effectiveDate": "2023.01.01"
+    },
+    {
+      "file": "工伤保险条例(2010修订)(FBM-CLI.2.142905).txt",
+      "title": "工伤保险条例（2010修订）",
+      "category": "行政法规",
+      "status": "现行有效",
+      "effectiveDate": "2011.01.01"
+    },
+    {
+      "file": "劳动部关于印发《工资支付暂行规定》的通知(FBM-CLI.4.12313).txt",
+      "title": "工资支付暂行规定",
+      "category": "规章及法律规范",
+      "status": "现行有效",
+      "effectiveDate": "1995.01.01"
+    },
+    {
+      "file": "劳动部关于印发《对＜工资支付暂行规定＞有关问题的补充规定》的通知(FBM-CLI.4.12615).txt",
+      "title": "对《工资支付暂行规定》有关问题的补充规定",
+      "category": "规章及法律规范",
+      "status": "现行有效",
+      "effectiveDate": ""
+    },
+    {
+      "file": "劳动部关于企业实行不定时工作制和综合计算工时工作制的审批办法(FBM-CLI.4.11467).txt",
+      "title": "关于企业实行不定时工作制和综合计算工时工作制的审批办法",
+      "category": "规章及法律规范",
+      "status": "现行有效",
+      "effectiveDate": "1995.01.01"
+    }
+  ]
+}

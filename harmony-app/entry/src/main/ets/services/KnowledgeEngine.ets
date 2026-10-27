@@ -78,6 +78,8 @@ export class KnowledgeEngine {
   private static items: IndexedChunk[] = [];
   private static documentCount: number = 0;
   private static searchableDocumentCount: number = 0;
+  // title + \u0000 + article → chunk, built on first exact-article lookup.
+  private static byArticle: Map<string, LawChunk> = new Map<string, LawChunk>();
 
   static loadFromBytes(bytes: Uint8Array): KnowledgeLoadStats {
     if (KnowledgeEngine.items.length > 0) {
@@ -200,6 +202,26 @@ export class KnowledgeEngine {
       );
     });
     return new KnowledgeResult(contextParts.join('\n\n'), citations);
+  }
+
+  static articles(keys: string[]): LawCitation[] {
+    if (KnowledgeEngine.byArticle.size === 0) {
+      KnowledgeEngine.items.forEach((item: IndexedChunk) => {
+        const key: string = item.chunk.title + '\u0000' + item.chunk.article;
+        if (!KnowledgeEngine.byArticle.has(key)) {
+          KnowledgeEngine.byArticle.set(key, item.chunk);
+        }
+      });
+    }
+    const out: LawCitation[] = [];
+    keys.forEach((key: string) => {
+      const parts: string[] = key.split('\u0000');
+      const chunk: LawChunk | undefined = KnowledgeEngine.byArticle.get(parts[0] + '\u0000' + parts[1]);
+      if (chunk !== undefined && parts.length >= 3) {
+        out.push(new LawCitation(parts[2], chunk));
+      }
+    });
+    return out;
   }
 
   static validateAnswer(answer: string, citations: LawCitation[]): string {

@@ -16,9 +16,13 @@ only when the user asks.
 
 ## Important paths
 
-- `harmony-app/entry/src/main/ets/pages/Index.ets`: main page (普法, 案件, 卷宗,
-  设置 tabs, history drawer, citation and checklist sheets). It is large; put new
-  self-contained features in `components/` instead of growing it.
+- `harmony-app/entry/src/main/ets/pages/Index.ets`: main page. The floating tab
+  bar has 普法, 维权 (梳理 · 卷宗 · 证据 pages) and 合同; 我的 (settings) is the
+  round HdsTabs mini bar beside it and opens as a cover. Also the history drawer
+  and the citation and checklist sheets. It is large; put new self-contained
+  features in `components/` instead of growing it.
+- `harmony-app/entry/src/main/ets/components/ContractReview.ets`: 合同体检
+  (import, facts, report, clause view), embedded as the 合同 section.
 - `harmony-app/entry/src/main/ets/components/EvidenceLibrary.ets`: 证据库
   (import, detail, compare slider, search, categories).
 - `harmony-app/entry/src/main/ets/services/`:
@@ -32,8 +36,16 @@ only when the user asks.
     index), `EvidenceIndex.ets` (textSearchImage), `EvidenceSearch.ets` (text +
     semantic merge), `EvidenceExtractor.ets` (categories, table rows, dossier
     fields, 证据清单 parsing).
+- `harmony-app/entry/src/main/ets/contract/`: contract review engine, pure logic
+  (no `@kit` imports): structure audit and anchors, red-line rules, model prompt
+  and reply checks, privacy masking, law-name mapping, and the provincial
+  minimum wage table (`MinimumWages.ets`; update it with its source date).
+  `services/ContractReviewService.ets` adds file reading (DOCX, PDF with OCR for
+  scanned pages), the AI pass and local storage.
 - `harmony-app/entry/src/main/resources/rawfile/law_index.json`: generated index.
-- `tools/kb_builder/`: offline corpus converter.
+- `tools/kb_builder/`: offline corpus converter. `add_documents.py` appends the
+  official texts listed in `supplements.json` without a full rebuild.
+- `tools/harmony/contract-rules/`: contract rule cases, run with Node.
 - `docs/contest/harmonyos7-release-notes.md`: change log with on-device
   verification records. Add an entry for user-visible changes.
 
@@ -84,6 +96,13 @@ only when the user asks.
   (HarmonyOS 7.0.0.109); the light effects use HDS `hdsEffect.pointLight` and a
   self-drawn glow instead.
 - Scroll containers center short content by default; add `.align(Alignment.Top)`.
+- One component holds one bound sheet and one bound content cover: a second
+  `bindSheet` or `bindContentCover` on the same component never opens. Merge
+  sheets into one with a kind field, or bind the extra cover to a zero-size node.
+- `@State`/`@Prop` names must not clash with base component members such as
+  `position`.
+- After a page or cover transition the first injected tap is often lost; tap
+  again before concluding that a control does not work.
 
 ## Verification
 
@@ -100,6 +119,16 @@ needs local signing; then install with:
 ```bash
 /Applications/DevEco-26/DevEco-Studio-26.app/Contents/sdk/default/openharmony/toolchains/hdc install -r harmony-app/entry/build/default/outputs/default/entry-default-signed.hap
 ```
+
+For contract review rule changes, run the cases (Node 22.6+ runs the TypeScript
+directly):
+
+```bash
+./tools/harmony/contract-rules/run.sh
+```
+
+Compliant cases expect no findings, so they catch false positives; every law
+reference a rule cites must resolve to an article in `law_index.json`.
 
 1. Test the affected flow on a HarmonyOS 7 (API 26) device. Evidence features
    cannot be tested on the emulator.

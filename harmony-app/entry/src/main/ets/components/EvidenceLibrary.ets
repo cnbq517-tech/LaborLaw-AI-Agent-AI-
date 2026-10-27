@@ -77,6 +77,10 @@ export struct EvidenceLibrary {
   @Prop cx: ThemeColors;
   @Prop isDark: boolean = false;
   @Link mode: number;
+  // Shown inside the 维权 section rather than as a cover: the list has no back
+  // button, and content leaves room for the floating tab bar.
+  @Prop embedded: boolean = false;
+  @Prop bottomInset: number = 0;
   onClose: () => void = () => {
   };
   onCountChange: (count: number) => void = (count: number) => {
@@ -693,18 +697,20 @@ export struct EvidenceLibrary {
   @Builder
   private Header() {
     Row({ space: 12 }) {
-      Text('‹')
-        .fontSize(24)
-        .fontColor(this.cx.gold)
-        .textAlign(TextAlign.Center)
-        .width(40)
-        .height(40)
-        .backgroundColor(this.cx.tint)
-        .borderRadius(20)
-        .accessibilityText('返回')
-        .onClick(() => {
-          this.goBack();
-        })
+      if (!this.embedded || this.mode !== EVIDENCE_MODE_LIST) {
+        Text('‹')
+          .fontSize(24)
+          .fontColor(this.cx.gold)
+          .textAlign(TextAlign.Center)
+          .width(40)
+          .height(40)
+          .backgroundColor(this.cx.tint)
+          .borderRadius(20)
+          .accessibilityText('返回')
+          .onClick(() => {
+            this.goBack();
+          })
+      }
       Column({ space: 3 }) {
         Text(this.mode === EVIDENCE_MODE_DETAIL && this.selected() !== undefined ? this.selected()!.title : '证据库')
           .fontSize(20)
@@ -739,7 +745,7 @@ export struct EvidenceLibrary {
       }
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 52, bottom: 12 })
+    .padding({ left: 16, right: 16, top: this.embedded ? 4 : 52, bottom: 12 })
   }
 
   @Builder
@@ -932,7 +938,7 @@ export struct EvidenceLibrary {
             .width('100%')
           }
           .width('100%')
-          .padding({ left: 16, right: 16, bottom: 40 })
+          .padding({ left: 16, right: 16, bottom: 40 + this.bottomInset })
         }
         .layoutWeight(1)
         .align(Alignment.Top)
@@ -1103,7 +1109,7 @@ export struct EvidenceLibrary {
         }
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 40 })
+      .padding({ left: 16, right: 16, bottom: 40 + this.bottomInset })
     }
     .layoutWeight(1)
     .align(Alignment.Top)
@@ -1428,7 +1434,7 @@ export struct EvidenceLibrary {
           .width('100%')
         }
         .width('100%')
-        .padding({ left: 16, right: 16, bottom: 40 })
+        .padding({ left: 16, right: 16, bottom: 40 + this.bottomInset })
       }
       .layoutWeight(1)
       .align(Alignment.Top)

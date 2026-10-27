@@ -117,6 +117,27 @@ export class EvidencePipeline {
       .then(() => EvidencePipeline.processNow(context, item, onUpdate, forceEnhance));
   }
 
+  // Recognizes a rendered page, such as a scanned PDF page, through the same
+  // serial queue. The caller keeps ownership of the pixel map.
+  static recognizePixelMap(pixelMap: image.PixelMap): Promise<string> {
+    const task: Promise<string> = EvidencePipeline.queue
+      .catch(() => {
+        // Keep the queue alive after a failed item.
+      })
+      .then(async (): Promise<string> => {
+        if (!EvidencePipeline.ocrReady) {
+          EvidencePipeline.ocrReady = await textRecognition.init();
+        }
+        const result: textRecognition.TextRecognitionResult = await textRecognition.recognizeText(
+          { pixelMap: pixelMap }, { isDirectionDetectionSupported: true });
+        return (result.value ?? '').trim();
+      });
+    EvidencePipeline.queue = task.then(() => {
+    }, () => {
+    });
+    return task;
+  }
+
   // Builds the semantic index for an item that was recognized before indexing
   // existed, or whose index was cleared for a rebuild.
   static ensureIndexed(context: common.Context, item: EvidenceItem, onUpdate: (item: EvidenceItem) => void): void {

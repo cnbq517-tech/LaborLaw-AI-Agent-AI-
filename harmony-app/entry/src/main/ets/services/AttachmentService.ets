@@ -36,7 +36,9 @@ export class AttachmentService {
     }
   }
 
-  private static async read(context: common.UIAbilityContext, uri: string): Promise<FileAttachment> {
+  // Reads a TXT, MD or DOCX file the user picked, keeping up to maxChars.
+  static async read(context: common.UIAbilityContext, uri: string,
+    maxChars: number = MAX_TEXT_CHARS): Promise<FileAttachment> {
     try {
       const name: string = AttachmentService.fileName(uri);
       const format: string = AttachmentService.extension(name);
@@ -68,8 +70,8 @@ export class AttachmentService {
       if (normalized.length === 0) {
         throw new Error('没有从文件中读取到可用文字');
       }
-      const truncated: boolean = normalized.length > MAX_TEXT_CHARS;
-      const text: string = truncated ? normalized.substring(0, MAX_TEXT_CHARS) : normalized;
+      const truncated: boolean = normalized.length > maxChars;
+      const text: string = truncated ? normalized.substring(0, maxChars) : normalized;
       return new FileAttachment(name, format.toUpperCase(), text, truncated);
     } catch (error) {
       if (error instanceof Error) {

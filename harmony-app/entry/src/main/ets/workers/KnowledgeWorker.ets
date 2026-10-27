@@ -1,6 +1,7 @@
 import { MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { KnowledgeResult } from '../models/AppModels';
 import {
+  KNOWLEDGE_ARTICLES,
   KNOWLEDGE_LOAD,
   KnowledgeRequest,
   KnowledgeResponse
@@ -20,6 +21,8 @@ workerPort.onmessage = (event: MessageEvents): void => {
       const stats: KnowledgeLoadStats = KnowledgeEngine.loadFromBytes(new Uint8Array(request.buffer));
       response.documentCount = stats.documentCount;
       response.searchableDocumentCount = stats.searchableDocumentCount;
+    } else if (request.type === KNOWLEDGE_ARTICLES) {
+      response.citations = KnowledgeEngine.articles(request.articleKeys);
     } else {
       const result: KnowledgeResult = KnowledgeEngine.search(request.query, request.limit);
       response.context = result.context;
