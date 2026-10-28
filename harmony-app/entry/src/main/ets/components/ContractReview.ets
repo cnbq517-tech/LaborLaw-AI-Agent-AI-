@@ -44,6 +44,7 @@ import {
 import { CAT_CONTRACT } from '../services/EvidenceExtractor';
 import { EvidenceStore } from '../services/EvidenceStore';
 import { ThemeColors } from '../theme/Theme';
+import { AskFab, READING_FAB_BOTTOM } from './chat/ChatViews';
 
 export const CONTRACT_MODE_HOME: number = 0;
 export const CONTRACT_MODE_FACTS: number = 1;
@@ -149,6 +150,7 @@ export struct ContractReview {
   @State askCollapsed: boolean = false;
   private docScroller: Scroller = new Scroller();
   private downScroll: number = 0;
+  private navScrollUntil: number = 0;
   private askController: TextAreaController = new TextAreaController();
   private handle: StreamHandle | undefined = undefined;
 
@@ -400,13 +402,29 @@ export struct ContractReview {
     this.scrollToFinding(k);
   }
 
-  private step(delta: number): void {
+  // The finding sheet's 上一处 / 下一处 move the sheet along; the navigator
+  // under the text only scrolls to the next one and marks it.
+  // Back at the top unfolds the composer, unless the navigator scrolled there:
+  // stepping to a finding near the top should keep it in reach.
+  private unfoldAtTop(): void {
+    if (Date.now() >= this.navScrollUntil) {
+      this.setFolded(false);
+    }
+  }
+
+  private step(delta: number, inSheet: boolean = true): void {
     const order: number[] = this.visibleOrder();
     if (order.length === 0) {
       return;
     }
     const next: number = this.navPos < 0 ? 0 : (this.navPos + delta + order.length) % order.length;
-    this.openFinding(order[next]);
+    if (inSheet) {
+      this.openFinding(order[next]);
+    } else {
+      this.navPos = next;
+      this.navScrollUntil = Date.now() + 800;
+      this.scrollToFinding(order[next]);
+    }
   }
 
   private scrollToFinding(k: number): void {
@@ -446,7 +464,7 @@ export struct ContractReview {
       (this.severityFilter.length > 0 && seg.severity !== this.severityFilter)) {
       return '#00000000';
     }
-    const current: Finding | undefined = this.sheet === SHEET_FINDING ? this.currentFinding() : undefined;
+    const current: Finding | undefined = this.currentFinding();
     const selected: boolean = current !== undefined && current === report.findings[seg.finding];
     if (seg.severity === SEVERITY_REDLINE) {
       return selected ? '#66D85A30' : (this.isDark ? '#40D85A30' : '#2ED85A30');
@@ -1031,7 +1049,7 @@ export struct ContractReview {
         this.foldAsk(yOffset);
       })
       .onReachStart(() => {
-        this.setFolded(false);
+        this.unfoldAtTop();
       })
     }
   }
@@ -1072,30 +1090,11 @@ export struct ContractReview {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
-        Text(this.visibleOrder().length > 0 ?
-          (this.navPos >= 0 ? (this.navPos + 1).toString() : '–') + ' / ' + this.visibleOrder().length.toString() : '')
-          .fontSize(12)
-          .fontColor(this.cx.muted)
-        Text('⌃')
-          .fontSize(16)
-          .fontColor(this.cx.text)
-          .width(30)
-          .height(30)
-          .textAlign(TextAlign.Center)
-          .accessibilityText('上一处')
-          .onClick(() => {
-            this.step(-1);
-          })
-        Text('⌄')
-          .fontSize(16)
-          .fontColor(this.cx.text)
-          .width(30)
-          .height(30)
-          .textAlign(TextAlign.Center)
-          .accessibilityText('下一处')
-          .onClick(() => {
-            this.step(1);
-          })
+        if (this.visibleOrder().length > 0) {
+          Text(this.visibleOrder().length.toString() + ' 处问题')
+            .fontSize(12)
+            .fontColor(this.cx.muted)
+        }
       }
       .width('100%')
       Row({ space: 6 }) {
@@ -1146,6 +1145,60 @@ export struct ContractReview {
     .width('100%')
     .padding({ left: 14, right: 12, top: this.embedded ? 40 : 52, bottom: 8 })
     .border({ width: { bottom: 1 }, color: { bottom: this.cx.line } })
+  }
+
+  @Builder
+  private NavArrow(up: boolean) {
+    Column() {
+      Image($r('app.media.ic_arrow_down'))
+        .width(18)
+        .height(18)
+        .fillColor(this.cx.text)
+        .rotate({ angle: up ? 180 : 0 })
+    }
+    .width(40)
+    .height(40)
+    .justifyContent(FlexAlign.Center)
+    .accessibilityText(up ? '上一处问题' : '下一处问题')
+    .onClick(() => {
+      this.step(up ? -1 : 1, false);
+    })
+  }
+
+  // Under the text while reading, beside 问 AI: steps through the findings in
+  // reading order (within the severity filter) and names the one marked.
+  // Tapping the name opens it.
+  @Builder
+  private FindingNavigator() {
+    Row() {
+      this.NavArrow(true)
+      Text(this.currentFinding() === undefined ? '从第 1 处看起' :
+        this.currentFinding()!.severity + ' · 第 ' + (this.navPos + 1).toString() + '/' +
+          this.visibleOrder().length.toString() + ' 处')
+        .fontSize(12.5)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.currentFinding() === undefined ? this.cx.text : this.severityColor(this.currentFinding()!.severity))
+        .maxLines(1)
+        // A fixed width keeps the arrows in place as the label changes.
+        .width(124)
+        .textAlign(TextAlign.Center)
+        .accessibilityText(this.currentFinding() === undefined ? '从第一处问题看起' : '打开这一处的详情')
+        .onClick(() => {
+          const order: number[] = this.visibleOrder();
+          if (this.navPos < 0) {
+            this.step(1, false);
+          } else if (this.navPos < order.length) {
+            this.openFinding(order[this.navPos]);
+          }
+        })
+      this.NavArrow(false)
+    }
+    .height(40)
+    .backgroundColor(this.cx.surface)
+    .borderRadius(20)
+    .border({ width: 1, color: this.cx.line })
+    .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
+    .margin({ left: 16, bottom: READING_FAB_BOTTOM - 1 })
   }
 
   @Builder
@@ -1233,7 +1286,7 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%').margin({ top: 16 })
         }
         .width('100%')
-        .padding({ left: 16, right: 22, top: 10, bottom: 24 })
+        .padding({ left: 16, right: 22, top: 10, bottom: this.askCollapsed ? 90 : 24 })
       }
       .id(DOC_SCROLL_ID)
       .align(Alignment.Top)
@@ -1247,7 +1300,7 @@ export struct ContractReview {
         this.foldAsk(yOffset);
       })
       .onReachStart(() => {
-        this.setFolded(false);
+        this.unfoldAtTop();
       })
       this.Minimap()
     }
@@ -1662,19 +1715,21 @@ export struct ContractReview {
           .width('100%')
           .height('100%')
           if (this.askCollapsed) {
-            Text('✦ 问 AI')
-              .fontSize(13)
-              .fontColor(this.cx.onGold)
-              .height(38)
-              .padding({ left: 15, right: 15 })
-              .backgroundColor(this.cx.gold)
-              .borderRadius(19)
-              .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
-              .margin({ right: 18, bottom: 20 + this.bottomInset })
-              .accessibilityText('展开追问框')
-              .onClick(() => {
-                this.setFolded(false);
+            Row() {
+              if (this.report() !== undefined && this.reportView === VIEW_TEXT && this.visibleOrder().length > 0) {
+                this.FindingNavigator()
+              }
+              Blank()
+              AskFab({
+                label: '问 AI',
+                cx: this.cx,
+                onOpen: () => {
+                  this.setFolded(false);
+                }
               })
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Bottom)
           }
         }
         .layoutWeight(1)

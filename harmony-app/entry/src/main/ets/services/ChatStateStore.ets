@@ -1,73 +1,34 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { ChatMessage, LawCitation } from '../models/AppModels';
+import {
+  CaseRecord,
+  ChatState,
+  DossierState,
+  MAX_ARCHIVED_CASES,
+  MAX_QUICK_SESSIONS,
+  QuickSession,
+  STATE_VERSION
+} from '../models/ChatState';
 
 const STATE_FILE: string = 'chat_state.json';
 const HISTORY_FILE: string = 'quick_history.json';
 const CASES_FILE: string = 'case_history.json';
 const CASES_VERSION: number = 1;
-export const MAX_ARCHIVED_CASES: number = 20;
-const STATE_VERSION: number = 1;
 const HISTORY_VERSION: number = 1;
 // Keeps the files small enough to rewrite quickly; older turns are dropped.
 const MAX_MESSAGES: number = 100;
-export const MAX_QUICK_SESSIONS: number = 50;
 // Reasoning can be far longer than the answer; keep the saved files small.
 const MAX_REASONING_CHARS: number = 8000;
-
-// One archived 普法 consultation. The newest session comes first in the list.
-export class QuickSession {
-  id: string;
-  title: string;
-  updatedAt: number;
-  messages: ChatMessage[];
-
-  constructor(id: string, title: string, updatedAt: number, messages: ChatMessage[]) {
-    this.id = id;
-    this.title = title;
-    this.updatedAt = updatedAt;
-    this.messages = messages;
-  }
-}
 
 class QuickHistoryFile {
   version: number = HISTORY_VERSION;
   sessions: QuickSession[] = [];
 }
 
-export class DossierState {
-  location: string = '';
-  company: string = '';
-  salary: string = '';
-  timeline: string = '';
-  request: string = '';
-  details: string = '';
-  report: string = '';
-  reportCitations: LawCitation[] = [];
-}
-
-// One archived 维权 case: its conversation and dossier. The current case
-// lives in ChatState; the newest archived case comes first.
-export class CaseRecord {
-  id: string = '';
-  title: string = '';
-  updatedAt: number = 0;
-  messages: ChatMessage[] = [];
-  dossier: DossierState = new DossierState();
-}
-
 class CaseHistoryFile {
   version: number = CASES_VERSION;
   cases: CaseRecord[] = [];
-}
-
-export class ChatState {
-  version: number = STATE_VERSION;
-  quickMessages: ChatMessage[] = [];
-  quickSessionId: string = '';
-  caseId: string = '';
-  caseMessages: ChatMessage[] = [];
-  dossier: DossierState = new DossierState();
 }
 
 // Saves conversations and the dossier to the app sandbox (el2, encrypted

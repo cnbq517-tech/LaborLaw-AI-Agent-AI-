@@ -18,9 +18,22 @@ only when the user asks.
 
 - `harmony-app/entry/src/main/ets/pages/Index.ets`: main page. The floating tab
   bar has 普法, 维权 (梳理 · 卷宗 · 证据 pages) and 合同; 我的 (settings) is the
-  round HdsTabs mini bar beside it and opens as a cover. Also the history drawer
-  and the citation and checklist sheets. It is large; put new self-contained
-  features in `components/` instead of growing it.
+  round HdsTabs mini bar beside it and opens as a cover. Index keeps the header,
+  tabs, the one sheet host (citation, checklist, cases), routing, persistence and
+  sending; the pages are components. Put new self-contained features in
+  `components/` instead of growing it.
+- `harmony-app/entry/src/main/ets/models/`: `AppEnv` (theme, model settings,
+  keyboard; provided to components as `@Provide('env')`), `ChatSession` (one
+  conversation: messages, input, streaming, layout, reading mode), `CaseState`
+  (the current 维权 case), `DrawerState`, and `ChatState` (what is saved).
+- `harmony-app/entry/src/main/ets/components/chat/`: `ChatViews.ets` holds the
+  conversation pieces 普法, 维权 and the dossier report share (answer text with
+  citation chips, actions, reasoning, streaming, pinned composer, jump button,
+  the folded composer button); `Conversation.ets` is a whole conversation page
+  with the reading mode. Components ask the page for things through small
+  action classes (`ChatActions`, `ConversationEvents`, ...).
+- `harmony-app/entry/src/main/ets/components/MinePage.ets`, `HistoryDrawer.ets`,
+  `DossierPage.ets`: 我的, the 普法 history drawer, and 维权 · 卷宗.
 - `harmony-app/entry/src/main/ets/components/ContractReview.ets`: 合同体检
   (import, facts, report, clause view), embedded as the 合同 section.
 - `harmony-app/entry/src/main/ets/components/EvidenceLibrary.ets`: 证据库
@@ -32,6 +45,8 @@ only when the user asks.
   - `AiApiClient.ets`: Chat Completions with SSE streaming and stop support.
   - `ChatStateStore.ets`: conversations, 普法 history and dossier on disk.
   - `CitationText.ets`: `[Kn]` citation chips, highlight, and copy text.
+  - `ConversationPrompts.ets`, `ConversationText.ets`, `CaseArchive.ets`: prompts,
+    history titles and grouping, case archiving; pure logic.
   - `EvidenceStore.ets`, `EvidencePipeline.ets` (save → super-resolution → OCR →
     index), `EvidenceIndex.ets` (textSearchImage), `EvidenceSearch.ets` (text +
     semantic merge), `EvidenceExtractor.ets` (categories, table rows, dossier
@@ -49,6 +64,7 @@ only when the user asks.
 - `tools/kb_builder/`: offline corpus converter. `add_documents.py` appends the
   official texts listed in `supplements.json` without a full rebuild.
 - `tools/harmony/contract-rules/`: contract rule cases, run with Node.
+- `tools/harmony/logic-tests/`: cases for the pure conversation and case logic.
 - `docs/contest/harmonyos7-release-notes.md`: change log with on-device
   verification records. Add an entry for user-visible changes.
 
@@ -110,6 +126,16 @@ only when the user asks.
   child component did nothing on the test device.
 - After a page or cover transition the first injected tap is often lost; tap
   again before concluding that a control does not work.
+- Anything that changes a scroll area's size while it scrolls can feed back
+  into the scroll. The header collapses by 88vp and the reading mode hides the
+  composer, tab bar and 维权 bars; a page only a little taller than its viewport
+  then fits, snaps back to the top and opens everything again. Both only engage
+  when the content has room to spare (`headerProgressAt`, `trackReading`).
+- `onDidScroll` reports `ScrollState.Idle` for scrolls made through a
+  `Scroller`; use that to ignore the app's own scrolling. With
+  `EdgeEffect.Spring`, a fling past the top springs back with downward deltas,
+  so ignore deltas near the top; `onReachStart` also fires for programmatic
+  scrolls.
 
 ## Verification
 
@@ -132,6 +158,13 @@ directly):
 
 ```bash
 ./tools/harmony/contract-rules/run.sh
+```
+
+The conversation and case logic has its own cases (the script falls back to the
+Node bundled with DevEco Studio when the system Node cannot transform types):
+
+```bash
+./tools/harmony/logic-tests/run.sh
 ```
 
 Compliant cases expect no findings, so they catch false positives; every law
