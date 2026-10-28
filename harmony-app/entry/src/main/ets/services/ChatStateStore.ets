@@ -4,6 +4,9 @@ import { ChatMessage, LawCitation } from '../models/AppModels';
 
 const STATE_FILE: string = 'chat_state.json';
 const HISTORY_FILE: string = 'quick_history.json';
+const CASES_FILE: string = 'case_history.json';
+const CASES_VERSION: number = 1;
+export const MAX_ARCHIVED_CASES: number = 20;
 const STATE_VERSION: number = 1;
 const HISTORY_VERSION: number = 1;
 // Keeps the files small enough to rewrite quickly; older turns are dropped.
@@ -43,10 +46,26 @@ export class DossierState {
   reportCitations: LawCitation[] = [];
 }
 
+// One archived 维权 case: its conversation and dossier. The current case
+// lives in ChatState; the newest archived case comes first.
+export class CaseRecord {
+  id: string = '';
+  title: string = '';
+  updatedAt: number = 0;
+  messages: ChatMessage[] = [];
+  dossier: DossierState = new DossierState();
+}
+
+class CaseHistoryFile {
+  version: number = CASES_VERSION;
+  cases: CaseRecord[] = [];
+}
+
 export class ChatState {
   version: number = STATE_VERSION;
   quickMessages: ChatMessage[] = [];
   quickSessionId: string = '';
+  caseId: string = '';
   caseMessages: ChatMessage[] = [];
   dossier: DossierState = new DossierState();
 }
@@ -69,19 +88,65 @@ export class ChatStateStore {
     }
     state.quickMessages = ChatStateStore.messages(parsed.quickMessages);
     state.quickSessionId = ChatStateStore.text(parsed.quickSessionId);
+    state.caseId = ChatStateStore.text(parsed.caseId);
     state.caseMessages = ChatStateStore.messages(parsed.caseMessages);
-    if (parsed.dossier !== undefined && parsed.dossier !== null) {
-      const dossier: DossierState = parsed.dossier;
-      state.dossier.location = ChatStateStore.text(dossier.location);
-      state.dossier.company = ChatStateStore.text(dossier.company);
-      state.dossier.salary = ChatStateStore.text(dossier.salary);
-      state.dossier.timeline = ChatStateStore.text(dossier.timeline);
-      state.dossier.request = ChatStateStore.text(dossier.request);
-      state.dossier.details = ChatStateStore.text(dossier.details);
-      state.dossier.report = ChatStateStore.text(dossier.report);
-      state.dossier.reportCitations = Array.isArray(dossier.reportCitations) ? dossier.reportCitations : [];
-    }
+    state.dossier = ChatStateStore.dossier(parsed.dossier);
     return state;
+  }
+
+  private static dossier(value: DossierState): DossierState {
+    const dossier: DossierState = new DossierState();
+    if (value === undefined || value === null) {
+      return dossier;
+    }
+    dossier.location = ChatStateStore.text(value.location);
+    dossier.company = ChatStateStore.text(value.company);
+    dossier.salary = ChatStateStore.text(value.salary);
+    dossier.timeline = ChatStateStore.text(value.timeline);
+    dossier.request = ChatStateStore.text(value.request);
+    dossier.details = ChatStateStore.text(value.details);
+    dossier.report = ChatStateStore.text(value.report);
+    dossier.reportCitations = Array.isArray(value.reportCitations) ? value.reportCitations : [];
+    return dossier;
+  }
+
+  static async loadCases(context: common.UIAbilityContext): Promise<CaseRecord[]> {
+    const path: string = ChatStateStore.path(context, CASES_FILE);
+    if (!(await fileIo.access(path))) {
+      return [];
+    }
+    const parsed: CaseHistoryFile = JSON.parse(await fileIo.readText(path)) as CaseHistoryFile;
+    if (parsed.version !== CASES_VERSION || !Array.isArray(parsed.cases)) {
+      return [];
+    }
+    const cases: CaseRecord[] = [];
+    parsed.cases.forEach((item: CaseRecord) => {
+      if (item === null || typeof item.id !== 'string' || item.id.length === 0) {
+        return;
+      }
+      const record: CaseRecord = new CaseRecord();
+      record.id = item.id;
+      record.title = ChatStateStore.text(item.title);
+      record.updatedAt = typeof item.updatedAt === 'number' ? item.updatedAt : 0;
+      record.messages = ChatStateStore.messages(item.messages);
+      record.dossier = ChatStateStore.dossier(item.dossier);
+      cases.push(record);
+    });
+    return cases.slice(0, MAX_ARCHIVED_CASES);
+  }
+
+  static saveCases(context: common.UIAbilityContext, cases: CaseRecord[]): Promise<void> {
+    const file: CaseHistoryFile = new CaseHistoryFile();
+    file.cases = cases.slice(0, MAX_ARCHIVED_CASES).map((item: CaseRecord) => {
+      const record: CaseRecord = new CaseRecord();
+      record.id = item.id;
+      record.title = item.title;
+      record.updatedAt = item.updatedAt;
+      record.messages = ChatStateStore.capped(item.messages);
+      record.dossier = item.dossier;
+      return record;
+    });
+    return ChatStateStore.enqueueWrite(ChatStateStore.path(context, CASES_FILE), JSON.stringify(file));
   }
 
   // Writes are serialized and go through a temp file plus rename, so a crash
@@ -90,6 +155,7 @@ export class ChatStateStore {
     const snapshot: ChatState = new ChatState();
     snapshot.quickMessages = ChatStateStore.capped(state.quickMessages);
     snapshot.quickSessionId = state.quickSessionId;
+    snapshot.caseId = state.caseId;
     snapshot.caseMessages = ChatStateStore.capped(state.caseMessages);
     snapshot.dossier = state.dossier;
     return ChatStateStore.enqueueWrite(ChatStateStore.path(context, STATE_FILE), JSON.stringify(snapshot));

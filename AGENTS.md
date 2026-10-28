@@ -40,6 +40,9 @@ only when the user asks.
   (no `@kit` imports): structure audit and anchors, red-line rules, model prompt
   and reply checks, privacy masking, law-name mapping, and the provincial
   minimum wage table (`MinimumWages.ets`; update it with its source date).
+  `ContractDocument.ets` lays out the annotated contract text (highlights by
+  finding offsets); `SampleContract.ets` is the built-in fictional contract,
+  whose expected findings are pinned in the rule cases.
   `services/ContractReviewService.ets` adds file reading (DOCX, PDF with OCR for
   scanned pages), the AI pass and local storage.
 - `harmony-app/entry/src/main/resources/rawfile/law_index.json`: generated index.
@@ -76,7 +79,8 @@ only when the user asks.
 
 ## ArkTS and HarmonyOS pitfalls seen in this project
 
-- `@Builder` parameters passed by value do not refresh. A builder whose inputs
+- `@Builder` parameters passed by value do not refresh (seen again in the
+  contract finding sheet's 上一处 / 下一处 and the 维权 segment labels). A builder whose inputs
   change with state (theme colors, for example) must take a single object
   literal so it is passed by reference, like `this.Icon({ res, size, color })`.
 - Object literals cannot construct classes that declare constructors
@@ -101,6 +105,9 @@ only when the user asks.
   sheets into one with a kind field, or bind the extra cover to a zero-size node.
 - `@State`/`@Prop` names must not clash with base component members such as
   `position`.
+- Hide the HdsTabs floating bar with `applyHideAnimation` /
+  `applyShowAnimation` on the controller; `bindScroller` with a scroller from a
+  child component did nothing on the test device.
 - After a page or cover transition the first injected tap is often lost; tap
   again before concluding that a control does not work.
 

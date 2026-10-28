@@ -99,6 +99,15 @@ export class Finding {
   evidenceGap: string = '';
   confidence: number = 0;
   ruleId: string = '';
+  // Where the problem is in the normalized contract text, for highlighting;
+  // -1 when only the clause is known.
+  start: number = -1;
+  end: number = -1;
+  // Rule findings: the reasoning step by step, so it can be checked.
+  trace: string[] = [];
+  // Model findings: the words the model quoted, and which AI pass found it.
+  quote: string = '';
+  batch: number = -1;
 }
 
 // Facts the user confirms before review. The user is always the worker, so the
@@ -120,6 +129,7 @@ export class ContractTerms {
   termAt: number = -1;
   probationDays: number = -1;
   probationAt: number = -1;
+  probationEnd: number = -1;
 }
 
 export class StructureAudit {

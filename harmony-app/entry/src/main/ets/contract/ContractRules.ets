@@ -72,11 +72,13 @@ const PENDING_TERM: string = '合同期限';
 class Wage {
   amount: number;
   at: number;
+  len: number;
   probation: boolean;
 
-  constructor(amount: number, at: number, probation: boolean) {
+  constructor(amount: number, at: number, len: number, probation: boolean) {
     this.amount = amount;
     this.at = at;
+    this.len = len;
     this.probation = probation;
   }
 }
@@ -111,9 +113,11 @@ export class ContractRules {
     // R014 required clauses missing (第十七条).
     for (const entry of REQUIRED_CLAUSES) {
       if (!entry.slice(1).some((key: string) => t.includes(key))) {
-        ContractRules.add(out, new Rule('R014', SEVERITY_HIGH, NATURE_MISSING, BARGAIN_MUST, '必备条款', 0.9,
-          ['《劳动合同法》第十七条']), WHOLE_CONTRACT, `全文未发现「${entry[0]}」的相关约定`,
+        const f: Finding = ContractRules.add(out, new Rule('R014', SEVERITY_HIGH, NATURE_MISSING, BARGAIN_MUST,
+          '必备条款', 0.9, ['《劳动合同法》第十七条']), WHOLE_CONTRACT, `全文未发现「${entry[0]}」的相关约定`,
           `补充「${entry[0]}」条款；必备条款缺失会影响合同成立与举证`);
+        f.trace = [`全文没有找到「${entry.slice(1).join('」「')}」等表述`,
+          `《劳动合同法》第十七条：劳动合同应当具备「${entry[0]}」`, '结论：缺少法定必备条款'];
       }
     }
 
@@ -334,6 +338,7 @@ export class ContractRules {
       if (range !== null && range.index < 12) {
         terms.probationDays = ContractRules.rangeDays(range);
         terms.probationAt = at + p;
+        terms.probationEnd = at + p + range.index + range[0].length;
         return;
       }
       const m: RegExpExecArray | null =
@@ -344,6 +349,7 @@ export class ContractRules {
         terms.probationDays = Math.round(unit === '天' || unit === '日' ? amount :
           unit === '周' || unit === '个星期' ? amount * 7 : amount * 30);
         terms.probationAt = at + p;
+        terms.probationEnd = at + p + m[0].length;
         return;
       }
       p = sentence.indexOf('试用期', p + 3);
@@ -374,9 +380,22 @@ export class ContractRules {
         term === TERM_TASK ? '以完成一定工作任务为期限' : `合同期限${term}个月`;
       const reason: string = cap === 0 ? `${termLabel}的劳动合同不得约定试用期，实际约定${label}` :
         `${termLabel}，法定试用期上限为${cap}个月，实际约定${label}，超出部分无效`;
-      ContractRules.add(out, new Rule('R001', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST, '试用期', 0.95,
-        ['《劳动合同法》第十九条']), anchorId, reason,
+      const f: Finding = ContractRules.add(out, new Rule('R001', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST,
+        '试用期', 0.95, ['《劳动合同法》第十九条']), anchorId, reason,
         cap === 0 ? '删除试用期约定' : `将试用期改为不超过${cap}个月；超出部分视为已履行正式期`);
+      if (terms.probationAt >= 0) {
+        f.start = terms.probationAt;
+        f.end = terms.probationEnd;
+      }
+      const band: string = cap === 0 ? '以完成一定工作任务为期限或不满三个月' : cap === 1 ? '三个月以上不满一年' :
+        cap === 2 ? '一年以上不满三年' : '三年以上或无固定期限';
+      f.trace = [
+        `合同期限：${term === TERM_OPEN ? '无固定期限' : term === TERM_TASK ? '以完成一定工作任务为期限' : term.toString() + ' 个月'}` +
+          (facts.termMonths !== TERM_UNKNOWN ? '（你填写的）' : '（从正文识别）'),
+        `试用期：${label}` + (facts.probationMonths >= 0 ? '（你填写的）' : '（从正文识别）'),
+        cap === 0 ? `《劳动合同法》第十九条：${band}的，不得约定试用期` :
+          `《劳动合同法》第十九条：${band}的，试用期不得超过 ${cap} 个月`,
+        `结论：${label} 超过 ${cap} 个月，超出部分无效`];
     }
   }
 
@@ -404,10 +423,14 @@ export class ContractRules {
       const pct: number = m[1] !== undefined ? parseInt(m[1], 10) :
         m[2] !== undefined ? ContractStructure.cn2int(m[2]) : ContractStructure.cn2int(m[3] ?? '') * 10;
       if (pct > 0 && pct < 80) {
-        ContractRules.add(out, new Rule('R003', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST, '试用期', 0.9,
-          ['《劳动合同法》第二十条']), ContractRules.anchorAt(anchors, m.index),
+        const anchorId: string = ContractRules.anchorAt(anchors, m.index);
+        const f: Finding = ContractRules.add(out, new Rule('R003', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST,
+          '试用期', 0.9, ['《劳动合同法》第二十条']), anchorId,
           `试用期工资为约定工资的${pct}%，低于法定的80%下限`,
           '试用期工资不低于本单位同岗位最低档工资或约定工资的80%，且不低于当地最低工资');
+        ContractRules.mark(f, m.index, m.index + m[0].length);
+        f.trace = [`在${ContractRules.label(anchors, anchorId)}找到「${ContractRules.excerpt(t, f)}」`,
+          '《劳动合同法》第二十条：试用期工资不得低于约定工资的 80%', `结论：${pct}% 低于 80%，无效`];
         return;
       }
       m = re.exec(t);
@@ -423,7 +446,7 @@ export class ContractRules {
     const pct: RegExpExecArray | null = new RegExp(
       `试用期${GAP}{0,8}?工资${GAP}{0,20}?(\\d{2,3})\\s*%`).exec(t);
     if (base !== undefined && pct !== null && !wages.some((w: Wage) => w.probation)) {
-      wages.push(new Wage(Math.round(base.amount * parseInt(pct[1], 10) / 100), pct.index, true));
+      wages.push(new Wage(Math.round(base.amount * parseInt(pct[1], 10) / 100), pct.index, pct[0].length, true));
     }
     const province: ProvinceWage | undefined = MinimumWages.forPlace(facts.city);
     const note: string = `（最低工资数据来自${MINIMUM_WAGE_SOURCE}，截至 ${MINIMUM_WAGE_AS_OF}，以当地人社部门公布为准）`;
@@ -433,6 +456,7 @@ export class ContractRules {
       if (reported.includes(key)) {
         continue;
       }
+      const found: number = out.length;
       const what: string = w.probation ? `试用期工资约${w.amount}元/月` : `约定月工资${w.amount}元`;
       const refs: string[] = w.probation ? ['《劳动合同法》第二十条', '《劳动法》第四十八条'] : ['《劳动法》第四十八条'];
       const anchorId: string = ContractRules.anchorAt(anchors, w.at);
@@ -464,6 +488,19 @@ export class ContractRules {
         f.pendingFacts = [PENDING_CITY];
         reported.push(key);
       }
+      if (out.length > found) {
+        const f: Finding = out[out.length - 1];
+        ContractRules.mark(f, w.at, w.at + w.len);
+        const where: string = ContractRules.label(anchors, f.anchorId);
+        const steps: string[] = w.probation && base !== undefined && pct !== null && w.at === pct.index ?
+          [`在${where}找到「${ContractRules.excerpt(t, f)}」`, `${base.amount} 元 × ${pct[1]}% ≈ ${w.amount} 元`] :
+          [`在${where}找到月工资 ${w.amount} 元`];
+        steps.push(province !== undefined ?
+          `${province.province}最低工资：${province.tiers.join(' / ')} 元（${province.effective} 起执行）` :
+          `未填工作城市，按全国各省最低一档 ${MinimumWages.nationalLowest()} 元、最高一档 ${MinimumWages.nationalHighest()} 元比较`);
+        steps.push(`结论：${f.nature === NATURE_INVALID ? '低于标准' : '需要确认'}（${f.severity}）`);
+        f.trace = steps;
+      }
     }
   }
 
@@ -487,7 +524,8 @@ export class ContractRules {
         while (start > 0 && !'。；\n'.includes(t.charAt(start - 1))) {
           start--;
         }
-        out.push(new Wage(Math.round(amount), m.index, t.substring(start, m.index + m[0].length).includes('试用')));
+        out.push(new Wage(Math.round(amount), m.index, m[0].length,
+          t.substring(start, m.index + m[0].length).includes('试用')));
       }
       m = re.exec(t);
     }
@@ -508,12 +546,16 @@ export class ContractRules {
       if (/专项培训|专业技术培训|服务期|培训费/.test(segment) || /竞业限制|竞业/.test(segment)) {
         return;
       }
+      const anchorId: string = clauses.length > 0 ? clauses[i].anchorId : ContractRules.anchorAt(anchors, t.indexOf('违约金'));
       const f: Finding = ContractRules.add(out, new Rule('R005', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST,
-        '违约金', 0.9, ['《劳动合同法》第二十五条']),
-        clauses.length > 0 ? clauses[i].anchorId : ContractRules.anchorAt(anchors, t.indexOf('违约金')),
+        '违约金', 0.9, ['《劳动合同法》第二十五条']), anchorId,
         '约定由劳动者承担违约金，且不属于「专项培训服务期」或「竞业限制」两种法定情形，原则上无效',
         '删除该违约金条款；确需约束的，改签专项培训服务期协议并留存培训费凭证');
       f.evidenceGap = '若主张服务期，需专项培训发票与付款凭证';
+      ContractRules.markSentence(f, t, '违约金', clauses.length > 0 ? clauses[i] : undefined);
+      f.trace = [`在${ContractRules.label(anchors, anchorId)}找到「${ContractRules.excerpt(t, f)}」`,
+        '《劳动合同法》第二十五条：只有专项培训服务期和竞业限制可以约定由劳动者承担违约金',
+        '本条不属于这两种情形，结论：原则上无效'];
     });
     const r006: Finding | undefined = ContractRules.onHits(out, anchors, t, '落户|户口|住房补贴|安家费', false,
       new Rule('R006', SEVERITY_MEDIUM, NATURE_PENDING, BARGAIN_SHOULD, '违约金', 0.6, ['《劳动合同法》第二十五条']),
@@ -544,19 +586,27 @@ export class ContractRules {
     const duration: RegExp = new RegExp(
       `(?:期限为?|离职后|离职之日起|终止劳动合同后|解除劳动合同后)${GAP}{0,6}?(${NUM})\\s*(年|个月)|(${NUM})\\s*(年|个月)\\s*(?:内|以内)`, 'g');
     for (const clause of clauses) {
+      // Scan the clause in the contract text itself, so hits have offsets.
+      const from: number = clause.end > clause.start ? clause.start : t.indexOf(clause.text);
+      const segment: string = clause.end > clause.start ? t.substring(clause.start, clause.end) : clause.text;
       duration.lastIndex = 0;
-      let m: RegExpExecArray | null = duration.exec(clause.text);
+      let m: RegExpExecArray | null = duration.exec(segment);
       while (m !== null) {
         const amount: number = ContractRules.amount(m[1] ?? m[3] ?? '');
         const months: number = (m[2] ?? m[4]) === '年' ? amount * 12 : amount;
         if (months > 24) {
-          ContractRules.add(out, new Rule('R007', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST, '竞业限制', 0.95,
-            ['《劳动合同法》第二十四条']), clause.anchorId,
+          const f: Finding = ContractRules.add(out, new Rule('R007', SEVERITY_REDLINE, NATURE_INVALID, BARGAIN_MUST,
+            '竞业限制', 0.95, ['《劳动合同法》第二十四条']), clause.anchorId,
             `竞业限制期限约定${months % 12 === 0 ? (months / 12).toString() + '年' : months.toString() + '个月'}，超过法定二年上限，超出部分无效`,
             '期限改为不超过二年；范围、地域、期限应与所接触秘密相适应');
+          if (from >= 0) {
+            ContractRules.mark(f, from + m.index, from + m.index + m[0].length);
+          }
+          f.trace = [`在${ContractRules.label(anchors, clause.anchorId)}找到「${m[0]}」，即 ${months} 个月`,
+            '《劳动合同法》第二十四条：竞业限制期限不得超过二年', `结论：${months} 个月超过 24 个月，超出部分无效`];
           break;
         }
-        m = duration.exec(clause.text);
+        m = duration.exec(segment);
       }
     }
     const all: string = clauses.map((a: ClauseAnchor) => a.text).join('\n');
@@ -566,19 +616,28 @@ export class ContractRules {
           '竞业限制', 0.7, ['《劳动合同法》第二十三条']), first,
           '竞业限制约定另行签订协议，需核对协议中是否约定离职后按月支付经济补偿', '签署竞业限制协议时确认按月支付经济补偿及标准');
         f.pendingFacts = ['竞业限制协议内容'];
+        ContractRules.markSentence(f, t, '竞业', clauses[0]);
+        ContractRules.genericTrace(f, t, anchors);
       } else {
         const f: Finding = ContractRules.add(out, new Rule('R008', SEVERITY_HIGH, NATURE_FLAW, BARGAIN_MUST, '竞业限制',
           0.9, ['《劳动合同法》第二十三条']), first, '竞业限制未约定离职后按月支付经济补偿',
           '补充离职后在竞业限制期限内按月支付经济补偿的约定，并写明补偿标准');
         f.evidenceGap = '需留存补偿支付凭证；单位三个月未付补偿的，劳动者可请求解除竞业限制约定';
+        ContractRules.markSentence(f, t, '竞业', clauses[0]);
+        f.trace = [`在${ContractRules.label(anchors, first)}找到竞业限制约定，但没有找到「经济补偿」「补偿金」等字样`,
+          '《劳动合同法》第二十三条：竞业限制须在离职后按月给予劳动者经济补偿', '结论：缺少补偿约定'];
       }
     }
     if (facts.confidential === FACT_NO || /(前台|保安|保洁|普工|操作工|实习生)/.test(facts.position) ||
       ContractRules.has(t, '(前台|保安|保洁|普工|操作工|实习生).{0,20}竞业')) {
-      ContractRules.add(out, new Rule('R009', SEVERITY_NOTE, NATURE_PENDING, BARGAIN_YIELD, '竞业限制', 0.7,
-        ['《劳动争议司法解释（二）》第十三条']), first,
+      const f: Finding = ContractRules.add(out, new Rule('R009', SEVERITY_NOTE, NATURE_PENDING, BARGAIN_YIELD,
+        '竞业限制', 0.7, ['《劳动争议司法解释（二）》第十三条']), first,
         '非高管、非高级技术人员且未接触商业秘密的人员签署竞业限制，条款对其不生效（部分无效/对人不生效，并非整条自始无效）',
         '限定适用主体为高管、高技及负有保密义务人员；其余人员可删除');
+      ContractRules.markSentence(f, t, '竞业', clauses[0]);
+      f.trace = [facts.confidential === FACT_NO ? '你填写的事实：不接触商业秘密' :
+        `岗位为${facts.position.length > 0 ? facts.position : '普通岗位'}，不属于高管或高级技术人员`,
+        '司法解释（二）第十三条：未接触商业秘密的劳动者，可以请求确认竞业限制不生效', '结论：条款对你可能不生效'];
     }
   }
 
@@ -615,6 +674,8 @@ export class ContractRules {
         if (!seen.includes(anchorId)) {
           seen.push(anchorId);
           const f: Finding = ContractRules.add(out, rule, anchorId, reason, suggestion);
+          ContractRules.mark(f, m.index, m.index + m[0].length);
+          ContractRules.genericTrace(f, t, anchors);
           if (first === undefined) {
             first = f;
           }
@@ -641,6 +702,58 @@ export class ContractRules {
       return true;
     }
     return index > 0 && '不未无非'.includes(t.charAt(index - 1));
+  }
+
+  private static mark(f: Finding, start: number, end: number): void {
+    if (start >= 0 && end > start) {
+      f.start = start;
+      f.end = end;
+    }
+  }
+
+  // Marks the sentence of the clause that contains the keyword.
+  private static markSentence(f: Finding, t: string, keyword: string, clause: ClauseAnchor | undefined): void {
+    const lo: number = clause !== undefined && clause.end > clause.start ? clause.start : 0;
+    const hi: number = clause !== undefined && clause.end > clause.start ? clause.end : t.length;
+    // Skip the heading (第八条 违约金): the body is the agreement.
+    let at: number = t.indexOf(keyword, lo);
+    const firstBreak: number = t.indexOf('\n', lo);
+    if (at >= 0 && firstBreak >= 0 && at < firstBreak && firstBreak + 1 < hi) {
+      const later: number = t.indexOf(keyword, firstBreak);
+      // Only the heading names it: mark the first sentence of the clause body.
+      at = later >= 0 && later < hi ? later : firstBreak + 1;
+    }
+    if (at < 0 || at >= hi) {
+      return;
+    }
+    let start: number = at;
+    while (start > lo && !'。；\n'.includes(t.charAt(start - 1))) {
+      start--;
+    }
+    let end: number = at;
+    while (end < hi && !'。；\n'.includes(t.charAt(end))) {
+      end++;
+    }
+    ContractRules.mark(f, start, end);
+  }
+
+  // Three steps for pattern rules: what matched, the law, the conclusion.
+  private static genericTrace(f: Finding, t: string, anchors: ClauseAnchor[]): void {
+    f.trace = [
+      f.start >= 0 ? `在${ContractRules.label(anchors, f.anchorId)}找到「${ContractRules.excerpt(t, f)}」` :
+        `在${ContractRules.label(anchors, f.anchorId)}找到相关约定`,
+      '对照' + f.lawRefs.join('、'),
+      `结论：${f.nature === NATURE_PENDING ? '需要确认' : f.nature}（${f.severity}）`];
+  }
+
+  private static label(anchors: ClauseAnchor[], anchorId: string): string {
+    const a: ClauseAnchor | undefined = anchors.find((x: ClauseAnchor) => x.anchorId === anchorId);
+    return a !== undefined && a.rawNo.length > 0 ? a.rawNo : '合同中';
+  }
+
+  private static excerpt(t: string, f: Finding): string {
+    const text: string = t.substring(f.start, f.end).replace(/\s+/g, '');
+    return text.length > 30 ? text.substring(0, 30) + '…' : text;
   }
 
   // The clause containing an offset: the last anchor starting at or before it.

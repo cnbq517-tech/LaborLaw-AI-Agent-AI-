@@ -68,6 +68,16 @@ export class ContractReport {
   findings: Finding[] = [];
   aiState: string = AI_NONE;
   aiNote: string = '';
+  aiBatches: AiBatch[] = [];
+}
+
+const MAX_BATCH_REASONING: number = 8000;
+
+// One AI pass: which clauses it covered and the reasoning the model returned.
+export class AiBatch {
+  label: string = '';
+  reasoning: string = '';
+  seconds: number = 0;
 }
 
 export class ReviewProgress {
@@ -196,12 +206,16 @@ export class ContractReviewService {
       const known: Finding[] = report.findings.filter((f: Finding) => ids.includes(f.anchorId));
       let correction: string = '';
       for (let attempt: number = 0; attempt <= MAX_RETRIES && !handle.cancelled; attempt++) {
+        const startedAt: number = Date.now();
         const parsed: ParsedBatch | undefined = await ContractReviewService.ask(config, handle,
           ContractAi.reviewPrompt(report.facts, laws, batch, known, correction), ids, laws);
         if (parsed === undefined || !parsed.ok) {
           failed++;
           break;
         }
+        const label: string = ContractReviewService.anchorLabel(report, ids[0]) +
+          (ids.length > 1 ? '至' + ContractReviewService.anchorLabel(report, ids[ids.length - 1]) : '');
+        ContractReviewService.keepBatch(report, parsed, label, startedAt);
         model.push(...parsed.findings);
         if (parsed.misplaced === 0) {
           break;
@@ -213,12 +227,14 @@ export class ContractReviewService {
     if (!handle.cancelled) {
       onProgress(new ReviewProgress('反向推演与漏项检查', batches.length, total));
       const laws: ReviewLaw[] = await ContractReviewService.laws('劳动合同 调岗 解除 规章制度 严重违纪 工资 加班费');
+      const startedAt: number = Date.now();
       const parsed: ParsedBatch | undefined = await ContractReviewService.ask(config, handle,
         ContractAi.reversePrompt(report.facts, laws, report.anchors, report.findings),
         report.anchors.map((a: ClauseAnchor) => a.anchorId), laws);
       if (parsed === undefined || !parsed.ok) {
         failed++;
       } else {
+        ContractReviewService.keepBatch(report, parsed, '全文反向推演与漏项检查', startedAt);
         model.push(...parsed.findings);
       }
     }
@@ -239,6 +255,36 @@ export class ContractReviewService {
     return report;
   }
 
+  // Keeps a pass's reasoning, tags its findings with it, and places each
+  // finding's quote in the contract text.
+  private static keepBatch(report: ContractReport, parsed: ParsedBatch, label: string, startedAt: number): void {
+    const batch: AiBatch = new AiBatch();
+    batch.label = label;
+    batch.reasoning = parsed.reasoning.length > MAX_BATCH_REASONING ?
+      parsed.reasoning.substring(0, MAX_BATCH_REASONING) + '…' : parsed.reasoning;
+    batch.seconds = Math.round((Date.now() - startedAt) / 1000);
+    report.aiBatches.push(batch);
+    parsed.findings.forEach((f: Finding) => {
+      f.batch = report.aiBatches.length - 1;
+      ContractReviewService.placeQuote(report, f);
+    });
+  }
+
+  // The model was sent masked text, so a quote with a placeholder is not
+  // found and the finding marks its whole clause instead.
+  private static placeQuote(report: ContractReport, f: Finding): void {
+    const anchor: ClauseAnchor | undefined = report.anchors.find((a: ClauseAnchor) => a.anchorId === f.anchorId);
+    const quote: string = f.quote.replace(/[…。]+$/, '');
+    if (anchor === undefined || quote.length < 2) {
+      return;
+    }
+    const at: number = report.text.indexOf(quote, anchor.start);
+    if (at >= 0 && at + quote.length <= anchor.end) {
+      f.start = at;
+      f.end = at + quote.length;
+    }
+  }
+
   private static async ask(config: ApiConfig, handle: StreamHandle, prompt: string, ids: string[],
     laws: ReviewLaw[]): Promise<ParsedBatch | undefined> {
     const messages: ChatMessage[] = [
@@ -249,7 +295,9 @@ export class ContractReviewService {
       // Streaming keeps slow reasoning models from hitting the read timeout.
       const result: StreamResult = await AiApiClient.stream(config, messages, () => {
       }, handle);
-      return ContractAi.parse(result.answer, ids, laws);
+      const parsed: ParsedBatch = ContractAi.parse(result.answer, ids, laws);
+      parsed.reasoning = result.reasoning;
+      return parsed;
     } catch (error) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'AI batch failed: %{public}s',
         error instanceof Error ? error.message : 'unknown');
@@ -319,10 +367,35 @@ export class ContractReviewService {
         return [];
       }
       const stored: StoredReports = JSON.parse(fileIo.readTextSync(path)) as StoredReports;
-      return Array.isArray(stored.reports) ? stored.reports : [];
+      const reports: ContractReport[] = Array.isArray(stored.reports) ? stored.reports : [];
+      reports.forEach((report: ContractReport) => ContractReviewService.fillDefaults(report));
+      return reports;
     } catch (error) {
       return [];
     }
+  }
+
+  // Reports saved before highlighting and AI reasoning lack those fields; give
+  // them the "unknown" values, so their findings mark the whole clause.
+  private static fillDefaults(report: ContractReport): void {
+    if (!Array.isArray(report.aiBatches)) {
+      report.aiBatches = [];
+    }
+    (Array.isArray(report.findings) ? report.findings : []).forEach((f: Finding) => {
+      if (typeof f.start !== 'number' || typeof f.end !== 'number') {
+        f.start = -1;
+        f.end = -1;
+      }
+      if (!Array.isArray(f.trace)) {
+        f.trace = [];
+      }
+      if (typeof f.quote !== 'string') {
+        f.quote = '';
+      }
+      if (typeof f.batch !== 'number') {
+        f.batch = -1;
+      }
+    });
   }
 
   // Newest first; keeps the latest MAX_REPORTS. Reports stay on the phone.

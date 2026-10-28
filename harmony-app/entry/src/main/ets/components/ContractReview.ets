@@ -2,9 +2,11 @@ import { common } from '@kit.AbilityKit';
 import { LengthMetrics } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { ContractAi } from '../contract/ContractAi';
+import { ContractDocument, DocLine, DocSegment } from '../contract/ContractDocument';
 import { ContractLaws } from '../contract/ContractLaws';
 import { ContractPrivacy } from '../contract/ContractPrivacy';
 import { ContractRules } from '../contract/ContractRules';
+import { SAMPLE_CONTRACT_CITY, SAMPLE_CONTRACT_NAME, SAMPLE_CONTRACT_TEXT } from '../contract/SampleContract';
 import {
   BARGAIN_MUST,
   BARGAIN_SHOULD,
@@ -33,6 +35,7 @@ import {
   AI_FAILED,
   AI_NONE,
   AI_PARTIAL,
+  AiBatch,
   ContractReport,
   ContractReviewService,
   ContractSource,
@@ -52,7 +55,22 @@ const DISCLAIMER: string = '本结果为规则审查与 AI 辅助审查，用于
 const SHEET_NONE: number = 0;
 const SHEET_PREVIEW: number = 1;
 const SHEET_LAW: number = 2;
+const SHEET_FINDING: number = 3;
+const VIEW_TEXT: number = 0;
+const VIEW_LIST: number = 1;
+const DOC_SCROLL_ID: string = 'contractDoc';
 const CORPUS_NOTE: string = '资料为机械收录，尚未完成全面法律效力审查，请以官方最新文本为准。';
+
+interface PillParams {
+  label: string;
+  color: string;
+  bg: string;
+}
+
+interface SectionParams {
+  title: string;
+  body: string;
+}
 
 interface ChoiceParams {
   label: string;
@@ -66,7 +84,7 @@ interface ChoiceParams {
 export struct ContractReview {
   @Prop cx: ThemeColors;
   @Prop isDark: boolean = false;
-  @Link mode: number;
+  @Link @Watch('modeChanged') mode: number;
   // Shown as the 合同 section rather than as a cover: the home page has no
   // header of its own, and content leaves room for the floating tab bar.
   @Prop embedded: boolean = false;
@@ -74,6 +92,10 @@ export struct ContractReview {
   // Changes when local records are cleared elsewhere; the reports reload.
   @Prop @Watch('reload') dataVersion: number = 0;
   onCountChange: (count: number) => void = (count: number) => {
+  };
+  // Reading mode: true while the report scrolls down (composer folded), so
+  // the page hides the tab bar too; false when it unfolds or the report closes.
+  onReadingChange: (reading: boolean) => void = (reading: boolean) => {
   };
   @Prop baseUrl: string = '';
   @Prop modelName: string = '';
@@ -96,6 +118,10 @@ export struct ContractReview {
   @State signed: string = FACT_UNKNOWN;
   @State termText: string = '';
   @State probationText: string = '';
+  // What the contract text gave for the two fields; left unchanged, they are
+  // read from the text again so the reasoning says where they came from.
+  private detectedTerm: string = '';
+  private detectedProbation: string = '';
   @State useAi: boolean = true;
   @State busy: boolean = false;
   @State progress: string = '';
@@ -109,6 +135,20 @@ export struct ContractReview {
   @State articles: LawCitation[] = [];
   @State showWarnings: boolean = false;
   @State question: string = '';
+  // The annotated contract text and its navigation.
+  @State reportView: number = VIEW_TEXT;
+  @State docLines: DocLine[] = [];
+  @State wholeFindings: number[] = [];
+  @State navOrder: number[] = [];
+  @State navPos: number = -1;
+  @State severityFilter: string = '';
+  @State docViewport: number = 0;
+  @State showThinking: boolean = false;
+  @State lawFromFinding: boolean = false;
+  // While reading, the composer folds into a small 问 AI button.
+  @State askCollapsed: boolean = false;
+  private docScroller: Scroller = new Scroller();
+  private downScroll: number = 0;
   private askController: TextAreaController = new TextAreaController();
   private handle: StreamHandle | undefined = undefined;
 
@@ -134,6 +174,24 @@ export struct ContractReview {
 
   aboutToDisappear(): void {
     this.handle?.cancel();
+    this.onReadingChange(false);
+  }
+
+  modeChanged(): void {
+    if (this.mode !== CONTRACT_MODE_REPORT) {
+      this.setFolded(false);
+    }
+  }
+
+  private setFolded(folded: boolean): void {
+    if (folded === this.askCollapsed) {
+      return;
+    }
+    if (folded) {
+      this.askController.stopEditing();
+    }
+    this.askCollapsed = folded;
+    this.onReadingChange(folded);
   }
 
   private context(): common.UIAbilityContext {
@@ -200,6 +258,13 @@ export struct ContractReview {
       `来自证据库的 ${items.length} 张合同照片`));
   }
 
+  // The built-in fictional contract, for trying the review without a file.
+  private trySample(): void {
+    this.startFacts(new ContractSource(SAMPLE_CONTRACT_NAME, SAMPLE_CONTRACT_TEXT, false,
+      '这是内置的虚构示例合同，用来体验审查流程'));
+    this.city = SAMPLE_CONTRACT_CITY;
+  }
+
   private startFacts(source: ContractSource): void {
     this.source = source;
     this.notice = source.note;
@@ -208,6 +273,8 @@ export struct ContractReview {
       terms.termMonths === TERM_TASK ? '以完成工作任务为期限' : terms.termMonths.toString();
     this.probationText = terms.probationDays > 0 ?
       (terms.probationDays % 30 === 0 ? (terms.probationDays / 30).toString() : (terms.probationDays / 30).toFixed(1)) : '';
+    this.detectedTerm = this.termText;
+    this.detectedProbation = this.probationText;
     this.useAi = this.aiReady();
     this.mode = CONTRACT_MODE_FACTS;
   }
@@ -218,12 +285,17 @@ export struct ContractReview {
     facts.position = this.jobTitle.trim();
     facts.confidential = this.confidential;
     facts.signed = this.signed;
-    const term: number = Number(this.termText.trim());
-    facts.termMonths = this.termText.includes('无固定') ? TERM_OPEN : this.termText.includes('任务') ? TERM_TASK :
-      this.termText.trim().length > 0 && Number.isFinite(term) && term > 0 ? term : TERM_UNKNOWN;
-    const probation: number = Number(this.probationText.trim());
-    facts.probationMonths = this.probationText.trim().length > 0 && Number.isFinite(probation) && probation >= 0 ?
-      probation : -1;
+    // A field left as detected stays unset: the rules read it from the text.
+    if (this.termText !== this.detectedTerm) {
+      const term: number = Number(this.termText.trim());
+      facts.termMonths = this.termText.includes('无固定') ? TERM_OPEN : this.termText.includes('任务') ? TERM_TASK :
+        this.termText.trim().length > 0 && Number.isFinite(term) && term > 0 ? term : TERM_UNKNOWN;
+    }
+    if (this.probationText !== this.detectedProbation) {
+      const probation: number = Number(this.probationText.trim());
+      facts.probationMonths = this.probationText.trim().length > 0 && Number.isFinite(probation) && probation >= 0 ?
+        probation : -1;
+    }
     return facts;
   }
 
@@ -261,9 +333,19 @@ export struct ContractReview {
   private openReport(id: string): void {
     this.reportId = id;
     this.notice = '';
-    this.mode = CONTRACT_MODE_REPORT;
+    this.reportView = VIEW_TEXT;
+    this.severityFilter = '';
+    this.navPos = -1;
+    this.setFolded(false);
     this.articles = [];
     const report: ContractReport | undefined = this.report();
+    if (report !== undefined) {
+      this.docLines = ContractDocument.lines(report.text, report.anchors, report.findings);
+      this.wholeFindings = ContractDocument.wholeContract(report.findings);
+      this.navOrder = ContractDocument.order(report.findings, report.anchors);
+    }
+    this.mode = CONTRACT_MODE_REPORT;
+    this.modeChanged();
     if (report !== undefined) {
       ContractReviewService.articles(report.findings).then((map: Map<string, LawCitation>) => {
         const list: LawCitation[] = [];
@@ -283,7 +365,102 @@ export struct ContractReview {
   private openLaw(ref: string): void {
     this.lawRef = ref;
     this.law = this.articles.find((c: LawCitation) => c.id === ref);
+    this.lawFromFinding = this.sheet === SHEET_FINDING;
     this.sheet = SHEET_LAW;
+  }
+
+  // Findings in reading order, limited to the severity filter.
+  private visibleOrder(): number[] {
+    const report: ContractReport | undefined = this.report();
+    if (report === undefined) {
+      return [];
+    }
+    return this.navOrder.filter((k: number) =>
+      this.severityFilter.length === 0 || report.findings[k].severity === this.severityFilter);
+  }
+
+  private currentFinding(): Finding | undefined {
+    const report: ContractReport | undefined = this.report();
+    const order: number[] = this.visibleOrder();
+    return report !== undefined && this.navPos >= 0 && this.navPos < order.length ?
+      report.findings[order[this.navPos]] : undefined;
+  }
+
+  // Opens the finding sheet on a finding (an index into report.findings) and
+  // scrolls the text to it.
+  private openFinding(k: number): void {
+    let order: number[] = this.visibleOrder();
+    if (!order.includes(k)) {
+      this.severityFilter = '';
+      order = this.visibleOrder();
+    }
+    this.navPos = order.indexOf(k);
+    this.showThinking = false;
+    this.sheet = SHEET_FINDING;
+    this.scrollToFinding(k);
+  }
+
+  private step(delta: number): void {
+    const order: number[] = this.visibleOrder();
+    if (order.length === 0) {
+      return;
+    }
+    const next: number = this.navPos < 0 ? 0 : (this.navPos + delta + order.length) % order.length;
+    this.openFinding(order[next]);
+  }
+
+  private scrollToFinding(k: number): void {
+    const report: ContractReport | undefined = this.report();
+    if (report === undefined || this.reportView !== VIEW_TEXT) {
+      return;
+    }
+    const f: Finding = report.findings[k];
+    const anchor: ClauseAnchor | undefined = report.anchors.find((a: ClauseAnchor) => a.anchorId === f.anchorId);
+    const pos: number = f.start >= 0 ? f.start : (anchor !== undefined ? anchor.start : -1);
+    if (pos < 0) {
+      this.docScroller.scrollEdge(Edge.Top);
+      return;
+    }
+    let line: number = 0;
+    this.docLines.forEach((l: DocLine) => {
+      if (l.start <= pos) {
+        line = l.index;
+      }
+    });
+    setTimeout(() => {
+      try {
+        const utils = this.getUIContext().getComponentUtils();
+        const top: number = utils.getRectangleById(DOC_SCROLL_ID).windowOffset.y;
+        const at: number = utils.getRectangleById('docline-' + line.toString()).windowOffset.y;
+        const offset: number = this.docScroller.currentOffset().yOffset + this.getUIContext().px2vp(at - top) - 60;
+        this.docScroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, offset), animation: { duration: 260 } });
+      } catch (error) {
+        // The line may not be laid out yet; the sheet still shows the finding.
+      }
+    }, 60);
+  }
+
+  private highlightBg(seg: DocSegment): string {
+    const report: ContractReport | undefined = this.report();
+    if (seg.finding < 0 || report === undefined ||
+      (this.severityFilter.length > 0 && seg.severity !== this.severityFilter)) {
+      return '#00000000';
+    }
+    const current: Finding | undefined = this.sheet === SHEET_FINDING ? this.currentFinding() : undefined;
+    const selected: boolean = current !== undefined && current === report.findings[seg.finding];
+    if (seg.severity === SEVERITY_REDLINE) {
+      return selected ? '#66D85A30' : (this.isDark ? '#40D85A30' : '#2ED85A30');
+    }
+    if (seg.severity === SEVERITY_HIGH || seg.severity === SEVERITY_MEDIUM) {
+      return selected ? '#66EF9F27' : (this.isDark ? '#40EF9F27' : '#38EF9F27');
+    }
+    return selected ? '#4D888780' : '#26888780';
+  }
+
+  private batchOf(f: Finding): AiBatch | undefined {
+    const report: ContractReport | undefined = this.report();
+    return report !== undefined && f.batch >= 0 && f.batch < report.aiBatches.length ?
+      report.aiBatches[f.batch] : undefined;
   }
 
   private copy(text: string, message: string): void {
@@ -496,6 +673,9 @@ export struct ContractReview {
             this.fromEvidence();
           })
         }
+        this.Card('用示例合同试试', '一份有典型问题的虚构合同，看看审查结果', $r('app.media.ic_shield'), () => {
+          this.trySample();
+        })
         Text('规则审查完全在手机上进行。开启 AI 深度审查时，只发送条款文字，姓名、身份证号、手机号、住址等会先替换成占位符。')
           .fontSize(11)
           .lineHeight(17)
@@ -712,13 +892,15 @@ export struct ContractReview {
   }
 
   @Builder
-  private Pill(label: string, color: string, bg: string) {
-    Text(label)
+  // Object parameters are passed by reference, so a pill or section whose
+  // values change (the finding sheet's 上一处 / 下一处) redraws.
+  private Pill(p: PillParams) {
+    Text(p.label)
       .fontSize(10)
       .fontWeight(FontWeight.Medium)
-      .fontColor(color)
+      .fontColor(p.color)
       .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-      .backgroundColor(bg)
+      .backgroundColor(p.bg)
       .borderRadius(8)
   }
 
@@ -734,8 +916,8 @@ export struct ContractReview {
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        this.Pill(f.severity, this.severityColor(f.severity), this.severityBg(f.severity))
-        this.Pill(this.stake(f, report.facts.signed), this.cx.muted, this.cx.surface2)
+        this.Pill({ label: f.severity, color: this.severityColor(f.severity), bg: this.severityBg(f.severity) })
+        this.Pill({ label: this.stake(f, report.facts.signed), color: this.cx.muted, bg: this.cx.surface2 })
       }
       .width('100%')
       Text(f.reason)
@@ -754,8 +936,7 @@ export struct ContractReview {
     .padding({ left: 2, right: 2, top: 12, bottom: 12 })
     .border({ width: { bottom: 1 }, color: { bottom: this.cx.line } })
     .onClick(() => {
-      this.anchorId = f.anchorId;
-      this.mode = CONTRACT_MODE_CLAUSE;
+      this.openFinding(this.report()!.findings.indexOf(f));
     })
   }
 
@@ -771,7 +952,7 @@ export struct ContractReview {
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.cx.text)
                 .layoutWeight(1)
-              this.Pill(this.aiLabel(this.report()!), this.cx.ok, this.cx.okBg)
+              this.Pill({ label: this.aiLabel(this.report()!), color: this.cx.ok, bg: this.cx.okBg })
             }
             .width('100%')
             Row({ space: 4 }) {
@@ -814,9 +995,9 @@ export struct ContractReview {
               .borderRadius(12)
           }
 
-          ForEach(this.report()!.findings, (f: Finding) => {
-            this.FindingRow(this.report()!, f)
-          }, (f: Finding) => f.findingId + f.anchorId + f.topic)
+          ForEach(this.visibleOrder(), (k: number) => {
+            this.FindingRow(this.report()!, this.report()!.findings[k])
+          }, (k: number) => this.reportId + '_' + k.toString())
 
           if (this.report()!.warnings.length > 0) {
             Column({ space: 6 }) {
@@ -846,7 +1027,261 @@ export struct ContractReview {
       .align(Alignment.Top)
       .scrollBar(BarState.Off)
       .layoutWeight(1)
+      .onDidScroll((xOffset: number, yOffset: number) => {
+        this.foldAsk(yOffset);
+      })
+      .onReachStart(() => {
+        this.setFolded(false);
+      })
     }
+  }
+
+  // Folds on a downward scroll. It unfolds only from the 问 AI button or at
+  // the top: unfolding on any upward scroll shrinks the text area, which
+  // scrolls it and folds it again.
+  private foldAsk(delta: number): void {
+    // Per-frame deltas of a slow scroll are small, so add them up.
+    this.downScroll = delta > 0 ? this.downScroll + delta : 0;
+    if (this.downScroll > 24) {
+      this.setFolded(true);
+    }
+  }
+
+  // Compact header for a report: back, name, position among the findings, then
+  // the severity filters and the text / list switch.
+  @Builder
+  private ReportHeader() {
+    Column({ space: 8 }) {
+      Row({ space: 10 }) {
+        Text('‹')
+          .fontSize(22)
+          .fontColor(this.cx.gold)
+          .textAlign(TextAlign.Center)
+          .width(34)
+          .height(34)
+          .backgroundColor(this.cx.tint)
+          .borderRadius(17)
+          .accessibilityText('返回')
+          .onClick(() => {
+            this.goBack();
+          })
+        Text(this.report()?.fileName ?? '审查结果')
+          .fontSize(17)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.cx.text)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        Text(this.visibleOrder().length > 0 ?
+          (this.navPos >= 0 ? (this.navPos + 1).toString() : '–') + ' / ' + this.visibleOrder().length.toString() : '')
+          .fontSize(12)
+          .fontColor(this.cx.muted)
+        Text('⌃')
+          .fontSize(16)
+          .fontColor(this.cx.text)
+          .width(30)
+          .height(30)
+          .textAlign(TextAlign.Center)
+          .accessibilityText('上一处')
+          .onClick(() => {
+            this.step(-1);
+          })
+        Text('⌄')
+          .fontSize(16)
+          .fontColor(this.cx.text)
+          .width(30)
+          .height(30)
+          .textAlign(TextAlign.Center)
+          .accessibilityText('下一处')
+          .onClick(() => {
+            this.step(1);
+          })
+      }
+      .width('100%')
+      Row({ space: 6 }) {
+        ForEach(SEVERITIES.filter((sev: string) => this.report() !== undefined && this.count(this.report()!, sev) > 0),
+          (sev: string) => {
+            Text(sev + ' ' + this.count(this.report()!, sev).toString())
+              .fontSize(11)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.severityFilter === sev ? this.cx.onBrand : this.severityColor(sev))
+              .padding({ left: 9, right: 9, top: 4, bottom: 4 })
+              .backgroundColor(this.severityFilter === sev ? this.severityColor(sev) : this.severityBg(sev))
+              .borderRadius(11)
+              .accessibilityText('只看' + sev)
+              .onClick(() => {
+                this.severityFilter = this.severityFilter === sev ? '' : sev;
+                this.navPos = -1;
+              })
+          })
+        Blank()
+        Row() {
+          Text('原文')
+            .fontSize(11.5)
+            .fontColor(this.reportView === VIEW_TEXT ? this.cx.text : this.cx.muted)
+            .fontWeight(this.reportView === VIEW_TEXT ? FontWeight.Bold : FontWeight.Regular)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .backgroundColor(this.reportView === VIEW_TEXT ? this.cx.surface : Color.Transparent)
+            .borderRadius(9)
+            .onClick(() => {
+              this.reportView = VIEW_TEXT;
+            })
+          Text('清单')
+            .fontSize(11.5)
+            .fontColor(this.reportView === VIEW_LIST ? this.cx.text : this.cx.muted)
+            .fontWeight(this.reportView === VIEW_LIST ? FontWeight.Bold : FontWeight.Regular)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .backgroundColor(this.reportView === VIEW_LIST ? this.cx.surface : Color.Transparent)
+            .borderRadius(9)
+            .onClick(() => {
+              this.reportView = VIEW_LIST;
+            })
+        }
+        .padding(2)
+        .backgroundColor(this.cx.surface2)
+        .borderRadius(11)
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .padding({ left: 14, right: 12, top: this.embedded ? 40 : 52, bottom: 8 })
+    .border({ width: { bottom: 1 }, color: { bottom: this.cx.line } })
+  }
+
+  @Builder
+  private DocLineView(line: DocLine) {
+    Text() {
+      ForEach(line.segments, (seg: DocSegment) => {
+        Span(seg.text)
+          .fontColor(this.cx.text)
+          .textBackgroundStyle({ color: this.highlightBg(seg), radius: 3 })
+          .decoration({
+            type: seg.finding >= 0 && this.highlightBg(seg) !== '#00000000' ? TextDecorationType.Underline :
+              TextDecorationType.None,
+            color: this.severityColor(seg.severity),
+            style: seg.severity === SEVERITY_REDLINE ? TextDecorationStyle.SOLID : TextDecorationStyle.DASHED
+          })
+          .onClick(() => {
+            if (seg.finding >= 0) {
+              this.openFinding(seg.finding);
+            }
+          })
+      }, (seg: DocSegment, i: number) => i.toString() + '_' + seg.finding.toString() + '_' + seg.text.length.toString())
+      if (line.clauseFindings.length > 0) {
+        Span(`  ⚑ ${line.clauseFindings.length} 处`)
+          .fontSize(11.5)
+          .fontColor(this.cx.warn)
+          .onClick(() => {
+            this.openFinding(line.clauseFindings[0]);
+          })
+      }
+    }
+    .id('docline-' + line.index.toString())
+    .fontSize(line.heading ? 15.5 : 15)
+    .fontWeight(line.heading ? FontWeight.Bold : FontWeight.Regular)
+    .lineHeight(26)
+    .width('100%')
+    .margin({ top: line.heading && line.index > 0 ? 10 : 0 })
+  }
+
+  // The contract with its problems marked where they are; tap one to open it.
+  @Builder
+  private DocView() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Scroll(this.docScroller) {
+        Column({ space: 2 }) {
+          if (this.report()!.aiNote.length > 0 || this.report()!.scanned || this.pendingFacts(this.report()!).length > 0) {
+            Column({ space: 4 }) {
+              if (this.report()!.aiNote.length > 0) {
+                Text(this.report()!.aiNote).fontSize(11).fontColor(this.cx.warn).width('100%')
+              }
+              if (this.report()!.scanned) {
+                Text('合同来自文字识别，可能有识别错误，请对照原件核对。').fontSize(11).fontColor(this.cx.warn).width('100%')
+              }
+              if (this.pendingFacts(this.report()!).length > 0) {
+                Text('⚠ 部分结论取决于：' + this.pendingFacts(this.report()!)).fontSize(11).fontColor(this.cx.warn)
+                  .width('100%')
+              }
+            }
+            .width('100%')
+            .margin({ bottom: 8 })
+          }
+          ForEach(this.wholeFindings, (k: number) => {
+            Row({ space: 6 }) {
+              this.Pill({
+                label: this.report()!.findings[k].severity,
+                color: this.severityColor(this.report()!.findings[k].severity),
+                bg: this.severityBg(this.report()!.findings[k].severity)
+              })
+              Text('全文 · ' + this.report()!.findings[k].reason)
+                .fontSize(12.5)
+                .fontColor(this.cx.text)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1)
+              Text('›').fontSize(16).fontColor(this.cx.faint)
+            }
+            .width('100%')
+            .padding({ top: 6, bottom: 6 })
+            .onClick(() => {
+              this.openFinding(k);
+            })
+          }, (k: number) => this.reportId + '_w' + k.toString())
+          ForEach(this.docLines, (line: DocLine) => {
+            this.DocLineView(line)
+          }, (line: DocLine) => this.reportId + '_' + line.index.toString())
+          Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%').margin({ top: 16 })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 22, top: 10, bottom: 24 })
+      }
+      .id(DOC_SCROLL_ID)
+      .align(Alignment.Top)
+      .scrollBar(BarState.Off)
+      .width('100%')
+      .height('100%')
+      .onAreaChange((oldValue: Area, newValue: Area) => {
+        this.docViewport = newValue.height as number;
+      })
+      .onDidScroll((xOffset: number, yOffset: number) => {
+        this.foldAsk(yOffset);
+      })
+      .onReachStart(() => {
+        this.setFolded(false);
+      })
+      this.Minimap()
+    }
+    .layoutWeight(1)
+  }
+
+  // Ticks on the right edge for every finding, at its place in the text.
+  @Builder
+  private Minimap() {
+    Stack() {
+      ForEach(this.visibleOrder(), (k: number) => {
+        Column()
+          .width(4)
+          .height(9)
+          .borderRadius(2)
+          .backgroundColor(this.severityColor(this.report()!.findings[k].severity))
+          .position({ x: 4, y: 8 + this.tickRatio(k) * Math.max(0, this.docViewport - 30) })
+          .responseRegion({ x: -6, y: -4, width: 18, height: 17 })
+          .onClick(() => {
+            this.openFinding(k);
+          })
+      }, (k: number) => this.reportId + '_t' + k.toString() + '_' + this.docViewport.toString())
+    }
+    .width(12)
+    .height('100%')
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  private tickRatio(k: number): number {
+    const report: ContractReport = this.report()!;
+    const f: Finding = report.findings[k];
+    const anchor: ClauseAnchor | undefined = report.anchors.find((a: ClauseAnchor) => a.anchorId === f.anchorId);
+    const pos: number = f.start >= 0 ? f.start : (anchor !== undefined ? anchor.start : 0);
+    return report.text.length > 0 ? Math.min(1, pos / report.text.length) : 0;
   }
 
   // Composer pinned at the bottom, as in 普法: the question goes to 案件 with
@@ -912,11 +1347,11 @@ export struct ContractReview {
   }
 
   @Builder
-  private Section(title: string, body: string) {
-    if (body.length > 0) {
+  private Section(p: SectionParams) {
+    if (p.body.length > 0) {
       Column({ space: 3 }) {
-        Text(title).fontSize(12.5).fontWeight(FontWeight.Medium).fontColor(this.cx.muted).width('100%')
-        Text(body).fontSize(15).lineHeight(25).fontColor(this.cx.text).width('100%')
+        Text(p.title).fontSize(12.5).fontWeight(FontWeight.Medium).fontColor(this.cx.muted).width('100%')
+        Text(p.body).fontSize(15).lineHeight(25).fontColor(this.cx.text).width('100%')
           .copyOption(CopyOptions.LocalDevice)
       }
       .width('100%')
@@ -938,90 +1373,166 @@ export struct ContractReview {
       })
   }
 
-  // One finding on a clause, flat like a 普法 answer: badges, sections, then a
-  // row of action chips.
-  @Builder
-  private ClauseFinding(report: ContractReport, f: Finding) {
-    Column({ space: 10 }) {
-      Row({ space: 5 }) {
-        Text(f.topic).fontSize(15.5).fontWeight(FontWeight.Bold).fontColor(this.cx.text)
-        this.Pill(f.severity, this.severityColor(f.severity), this.severityBg(f.severity))
-        this.Pill(f.nature, this.cx.muted, this.cx.surface2)
-        this.Pill(this.stake(f, report.facts.signed), this.cx.muted, this.cx.surface2)
-        Blank()
-        Text(f.ruleId === 'AI' ? 'AI 意见' : `规则 ${f.ruleId}`).fontSize(10).fontColor(this.cx.faint)
-      }
-      .width('100%')
-      this.Section('为什么有问题', f.reason)
-      this.Section('建议', f.suggestion)
-      if (!report.scanned) {
-        this.Section('可以改为', f.altClause)
-      }
-      this.Section('证据缺口', f.evidenceGap)
-      if (f.pendingFacts.length > 0) {
-        this.Section('待确认', f.pendingFacts.join('、'))
-      }
-      Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-        if (f.suggestion.length > 0) {
-          this.ActionChip('复制建议', this.cx.gold, () => {
-            this.copy(f.suggestion + (f.altClause.length > 0 && !report.scanned ? '\n' + f.altClause : ''), '已复制建议');
-          })
-        }
-        ForEach(f.lawRefs, (ref: string) => {
-          this.ActionChip(this.refLabel(ref) + (ContractLaws.isKnownMissing(ref) ? ' · 本地库未收录' : ' ›'),
-            ContractLaws.isKnownMissing(ref) ? this.cx.faint : this.cx.brand, () => {
-              if (!ContractLaws.isKnownMissing(ref)) {
-                this.openLaw(ref);
-              }
-            })
-        })
-      }
-      .width('100%')
-    }
-    .alignItems(HorizontalAlign.Start)
-    .width('100%')
-    .padding({ left: 2, right: 2, top: 14, bottom: 14 })
-    .border({ width: { bottom: 1 }, color: { bottom: this.cx.line } })
-  }
-
-  @Builder
-  private Clause() {
-    if (this.report() !== undefined) {
-      Scroll() {
-        Column({ space: 4 }) {
-          if (this.anchorId !== WHOLE_CONTRACT) {
-            Text(this.report()!.anchors.find((a: ClauseAnchor) => a.anchorId === this.anchorId)?.text ?? '')
-              .fontSize(14)
-              .lineHeight(23)
-              .fontColor(this.cx.muted)
-              .copyOption(CopyOptions.LocalDevice)
-              .width('100%')
-              .padding({ left: 12, right: 4, top: 2, bottom: 2 })
-              .border({ width: { left: 3 }, color: { left: this.cx.gold } })
-              .margin({ bottom: 6 })
-          } else {
-            Text('全文级问题：合同整体缺少或存在的约定').fontSize(12.5).fontColor(this.cx.muted).width('100%')
-          }
-          ForEach(this.report()!.findings.filter((f: Finding) => f.anchorId === this.anchorId), (f: Finding) => {
-            this.ClauseFinding(this.report()!, f)
-          }, (f: Finding) => f.findingId + f.topic)
-          Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%').margin({ top: 10 })
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, bottom: 24 })
-      }
-      .align(Alignment.Top)
-      .scrollBar(BarState.Off)
-      .layoutWeight(1)
-    }
-  }
-
   @Builder
   private SheetBody() {
     if (this.sheet === SHEET_PREVIEW) {
       this.PreviewSheet()
+    } else if (this.sheet === SHEET_FINDING) {
+      this.FindingSheet()
     } else {
       this.LawSheetBody()
+    }
+  }
+
+  // One finding: the words, why, how it was judged, the law, what to do, and
+  // for AI findings the model's own reasoning.
+  @Builder
+  private FindingSheet() {
+    if (this.currentFinding() !== undefined && this.report() !== undefined) {
+      Column() {
+        Scroll() {
+          Column({ space: 10 }) {
+            Row({ space: 5 }) {
+              Text(ContractReviewService.anchorLabel(this.report()!, this.currentFinding()!.anchorId) + ' · ' +
+                this.currentFinding()!.topic)
+                .fontSize(16)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(this.cx.text)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .flexShrink(1)
+              this.Pill({ label: this.currentFinding()!.severity, color: this.severityColor(this.currentFinding()!.severity), bg: this.severityBg(this.currentFinding()!.severity) })
+              this.Pill({ label: this.stake(this.currentFinding()!, this.report()!.facts.signed), color: this.cx.muted, bg: this.cx.surface2 })
+              Blank()
+              Text((this.navPos + 1).toString() + ' / ' + this.visibleOrder().length.toString())
+                .fontSize(11)
+                .fontColor(this.cx.faint)
+            }
+            .width('100%')
+            if (this.currentFinding()!.start >= 0) {
+              Text(this.report()!.text.substring(this.currentFinding()!.start, this.currentFinding()!.end))
+                .fontSize(13.5)
+                .lineHeight(21)
+                .fontColor(this.cx.muted)
+                .width('100%')
+                .padding({ left: 10, top: 2, bottom: 2 })
+                .border({ width: { left: 3 }, color: { left: this.severityColor(this.currentFinding()!.severity) } })
+            }
+            this.Section({ title: '为什么有问题', body: this.currentFinding()!.reason })
+            if (this.currentFinding()!.trace.length > 0) {
+              Column({ space: 5 }) {
+                Text('审查过程 · 规则 ' + this.currentFinding()!.ruleId)
+                  .fontSize(12.5)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.cx.muted)
+                  .width('100%')
+                ForEach(this.currentFinding()!.trace, (line: string, i: number) => {
+                  Row({ space: 7 }) {
+                    Text((i + 1).toString())
+                      .fontSize(10)
+                      .fontColor(this.cx.brand)
+                      .textAlign(TextAlign.Center)
+                      .width(17)
+                      .height(17)
+                      .borderRadius(9)
+                      .backgroundColor(this.cx.tint)
+                    Text(line).fontSize(13.5).lineHeight(21).fontColor(this.cx.text).layoutWeight(1)
+                  }
+                  .width('100%')
+                  .alignItems(VerticalAlign.Top)
+                }, (line: string, i: number) => i.toString() + line)
+              }
+              .width('100%')
+            } else if (this.currentFinding()!.ruleId !== 'AI') {
+              Text('审查过程：重新审查这份合同后可查看').fontSize(11.5).fontColor(this.cx.faint).width('100%')
+            }
+            if (this.currentFinding()!.lawRefs.length > 0) {
+              Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+                ForEach(this.currentFinding()!.lawRefs, (ref: string) => {
+                  this.ActionChip(this.refLabel(ref) + ' ›', this.cx.brand, () => {
+                    this.openLaw(ref);
+                  })
+                })
+              }
+              .width('100%')
+            }
+            this.Section({ title: '建议', body: this.currentFinding()!.suggestion })
+            if (!this.report()!.scanned) {
+              this.Section({ title: '可以改为', body: this.currentFinding()!.altClause })
+            }
+            this.Section({ title: '证据缺口', body: this.currentFinding()!.evidenceGap })
+            if (this.currentFinding()!.pendingFacts.length > 0) {
+              this.Section({ title: '待确认', body: this.currentFinding()!.pendingFacts.join('、') })
+            }
+            if (this.currentFinding()!.ruleId === 'AI') {
+              Column({ space: 5 }) {
+                Row() {
+                  Text('AI 思考过程' + (this.batchOf(this.currentFinding()!) !== undefined ?
+                    ' · ' + this.batchOf(this.currentFinding()!)!.label + ' · 用时 ' +
+                      this.batchOf(this.currentFinding()!)!.seconds.toString() + ' 秒' : ''))
+                    .fontSize(12.5)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(this.cx.gold)
+                    .layoutWeight(1)
+                  if (this.batchOf(this.currentFinding()!) !== undefined &&
+                    this.batchOf(this.currentFinding()!)!.reasoning.length > 0) {
+                    Text(this.showThinking ? '收起' : '展开')
+                      .fontSize(11.5)
+                      .fontColor(this.cx.faint)
+                      .onClick(() => {
+                        this.showThinking = !this.showThinking;
+                      })
+                  }
+                }
+                .width('100%')
+                if (this.batchOf(this.currentFinding()!) === undefined ||
+                  this.batchOf(this.currentFinding()!)!.reasoning.length === 0) {
+                  Text('这个模型没有返回思考过程。').fontSize(11.5).fontColor(this.cx.faint).width('100%')
+                } else if (this.showThinking) {
+                  Text(this.batchOf(this.currentFinding()!)!.reasoning)
+                    .fontSize(12.5)
+                    .lineHeight(20)
+                    .fontColor(this.cx.muted)
+                    .width('100%')
+                    .padding({ left: 10 })
+                    .border({ width: { left: 2 }, color: { left: this.cx.gold } })
+                  Text('思考过程由模型生成，覆盖这一批的全部条款，未经引用校验，以审查结论为准。')
+                    .fontSize(10.5)
+                    .fontColor(this.cx.faint)
+                    .width('100%')
+                }
+              }
+              .width('100%')
+            }
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 4, bottom: 12 })
+        }
+        .align(Alignment.Top)
+        .scrollBar(BarState.Off)
+        .layoutWeight(1)
+        Row({ space: 8 }) {
+          if (this.currentFinding()!.suggestion.length > 0) {
+            this.ActionChip('复制建议', this.cx.gold, () => {
+              const f: Finding = this.currentFinding()!;
+              this.copy(f.suggestion + (f.altClause.length > 0 && !this.report()!.scanned ? '\n' + f.altClause : ''),
+                '已复制建议');
+            })
+          }
+          Blank()
+          this.ActionChip('‹ 上一处', this.cx.text, () => {
+            this.step(-1);
+          })
+          this.ActionChip('下一处 ›', this.cx.text, () => {
+            this.step(1);
+          })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 24 })
+        .border({ width: { top: 1 }, color: { top: this.cx.line } })
+      }
+      .width('100%')
+      .height('100%')
     }
   }
 
@@ -1051,6 +1562,14 @@ export struct ContractReview {
   private LawSheetBody() {
     Scroll() {
       Column({ space: 10 }) {
+        if (this.lawFromFinding) {
+          Text('‹ 返回这一处问题')
+            .fontSize(12.5)
+            .fontColor(this.cx.brand)
+            .onClick(() => {
+              this.sheet = SHEET_FINDING;
+            })
+        }
         Text(this.law !== undefined ? `${this.law.title} ${this.law.article}` : this.lawRef)
           .fontSize(16)
           .fontWeight(FontWeight.Bold)
@@ -1076,7 +1595,9 @@ export struct ContractReview {
 
   build() {
     Column() {
-      if (!this.embedded || this.mode !== CONTRACT_MODE_HOME) {
+      if (this.mode === CONTRACT_MODE_REPORT) {
+        this.ReportHeader()
+      } else if (!this.embedded || this.mode !== CONTRACT_MODE_HOME) {
         this.Header()
       }
       if (this.notice.length > 0) {
@@ -1127,13 +1648,34 @@ export struct ContractReview {
         }
         .layoutWeight(1)
       } else if (this.mode === CONTRACT_MODE_REPORT || this.mode === CONTRACT_MODE_CLAUSE) {
-        Column() {
-          if (this.mode === CONTRACT_MODE_CLAUSE) {
-            this.Clause()
-          } else {
-            this.Report()
+        Stack({ alignContent: Alignment.BottomEnd }) {
+          Column() {
+            if (this.report() !== undefined && this.reportView === VIEW_TEXT) {
+              this.DocView()
+            } else {
+              this.Report()
+            }
+            if (!this.askCollapsed) {
+              this.PinnedAsk()
+            }
           }
-          this.PinnedAsk()
+          .width('100%')
+          .height('100%')
+          if (this.askCollapsed) {
+            Text('✦ 问 AI')
+              .fontSize(13)
+              .fontColor(this.cx.onGold)
+              .height(38)
+              .padding({ left: 15, right: 15 })
+              .backgroundColor(this.cx.gold)
+              .borderRadius(19)
+              .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
+              .margin({ right: 18, bottom: 20 + this.bottomInset })
+              .accessibilityText('展开追问框')
+              .onClick(() => {
+                this.setFolded(false);
+              })
+          }
         }
         .layoutWeight(1)
       } else {
@@ -1150,7 +1692,7 @@ export struct ContractReview {
       colors: [[this.cx.bgTop, 0.0], [this.cx.bgBottom, 1.0]]
     })
     .bindSheet(this.sheet !== SHEET_NONE, this.SheetBody(), {
-      height: this.sheet === SHEET_PREVIEW ? '70%' : '60%',
+      height: this.sheet === SHEET_PREVIEW ? '70%' : this.sheet === SHEET_FINDING ? '62%' : '60%',
       dragBar: true,
       showClose: false,
       maskColor: this.isDark ? '#88040B18' : '#66404A5A',

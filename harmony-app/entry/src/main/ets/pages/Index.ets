@@ -3,6 +3,7 @@ import { deviceInfo, pasteboard } from '@kit.BasicServicesKit';
 import { KeyboardAvoidMode, LengthMetrics, mediaquery, uiMaterial, window } from '@kit.ArkUI';
 import {
   DividerMode,
+  HdsAnimationMode,
   HdsBarStyle,
   HdsTabs,
   HdsTabsController,
@@ -25,8 +26,10 @@ import { AiApiClient, StreamHandle, StreamResult } from '../services/AiApiClient
 import { AttachmentService } from '../services/AttachmentService';
 import {
   ChatState,
+  CaseRecord,
   ChatStateStore,
   DossierState,
+  MAX_ARCHIVED_CASES,
   MAX_QUICK_SESSIONS,
   QuickSession
 } from '../services/ChatStateStore';
@@ -77,6 +80,7 @@ const STOPPED_SUFFIX: string = '\n\n（已停止生成）';
 const DRAWER_WIDTH: number = 320;
 const SHEET_CITATION: number = 6;
 const SHEET_CHECKLIST: number = 7;
+const SHEET_CASES: number = 8;
 const EVIDENCE_TEXT_LIMIT: number = 16000;
 
 // One row of 证据核对: a checklist item from an AI answer and what the
@@ -220,6 +224,10 @@ struct Index {
   @State drawerVisible: boolean = false;
   @State evidenceMode: number = EVIDENCE_MODE_LIST;
   @State rightsTab: number = RIGHTS_CHAT;
+  // The current 维权 case is caseMessages plus the dossier fields; caseHistory
+  // holds the archived ones.
+  @State caseId: string = '';
+  @State caseHistory: CaseRecord[] = [];
   @State mineOpen: boolean = false;
   @State contractMode: number = CONTRACT_MODE_HOME;
   @State contractReportCount: number = 0;
@@ -235,6 +243,7 @@ struct Index {
   @State historyQuery: string = '';
 
   private hdsTabsController: HdsTabsController = new HdsTabsController();
+  private tabBarHidden: boolean = false;
   private quickScroller: Scroller = new Scroller();
   private caseScroller: Scroller = new Scroller();
   private dossierScroller: Scroller = new Scroller();
@@ -644,6 +653,7 @@ struct Index {
       }
       if (this.caseMessages.length === 0) {
         this.caseMessages = state.caseMessages;
+        this.caseId = state.caseId;
       }
       const dossier: DossierState = state.dossier;
       if (!this.hasDossierInput()) {
@@ -674,6 +684,11 @@ struct Index {
         .slice(0, MAX_QUICK_SESSIONS);
     } catch (error) {
       // A damaged history file only costs the archived consultations.
+    }
+    try {
+      this.caseHistory = await ChatStateStore.loadCases(this.abilityContext());
+    } catch (error) {
+      // A damaged case archive only costs the archived cases.
     } finally {
       this.stateRestored = true;
     }
@@ -773,6 +788,158 @@ struct Index {
     return this.sessionTime(session.updatedAt) + ' · ' + rounds.toString() + ' 轮问答';
   }
 
+  private hasCaseContent(): boolean {
+    return this.caseMessages.length > 0 || this.hasDossierInput() || this.dossierReport.length > 0;
+  }
+
+  // A short name for a case: unit and claim when the dossier has them,
+  // otherwise the start of the first message.
+  private caseTitleOf(messages: ChatMessage[], dossier: DossierState): string {
+    if (dossier.company.trim().length > 0 && dossier.request.trim().length > 0) {
+      return dossier.company.trim() + ' · ' + dossier.request.trim().substring(0, 12);
+    }
+    if (dossier.company.trim().length > 0) {
+      return dossier.company.trim();
+    }
+    const first: ChatMessage | undefined = messages.find((m: ChatMessage) => m.role === ChatRole.USER);
+    if (first === undefined) {
+      return '新案件';
+    }
+    // The employer named in the story, else its first sentence without list
+    // numbering or headings.
+    const unit: RegExpExecArray | null =
+      /([\u4e00-\u9fa5A-Za-z]{2,16}?(?:有限责任公司|股份有限公司|有限公司|集团|公司|工厂))/.exec(first.content);
+    if (unit !== null) {
+      // "林某入职广州某某公司" → "广州某某公司".
+      return unit[1].replace(/^.*?(入职|就职|任职|受雇于|在|于|被|与|到)/, '');
+    }
+    const sentence: string = first.content
+      .replace(/^[\s\d一二三四五六七八九十]+[.、．)）]\s*/gm, '')
+      .split(/[。！？\n]/).map((part: string) => part.trim()).find((part: string) => part.length >= 4) ?? '';
+    return sentence.length > 18 ? sentence.substring(0, 18) + '…' : (sentence.length > 0 ? sentence : '新案件');
+  }
+
+  private currentDossier(): DossierState {
+    const dossier: DossierState = new DossierState();
+    dossier.location = this.location;
+    dossier.company = this.company;
+    dossier.salary = this.salary;
+    dossier.timeline = this.timeline;
+    dossier.request = this.request;
+    dossier.details = this.details;
+    dossier.report = this.dossierReport;
+    dossier.reportCitations = this.reportCitations;
+    return dossier;
+  }
+
+  private currentCaseTitle(): string {
+    return this.hasCaseContent() ? this.caseTitleOf(this.caseMessages, this.currentDossier()) : '新案件';
+  }
+
+  private caseBusy(): boolean {
+    return this.isCaseSending || this.isReportSending;
+  }
+
+  // Moves the current case to the top of the archive, if it has anything.
+  private archiveCurrentCase(): void {
+    if (!this.hasCaseContent()) {
+      return;
+    }
+    const record: CaseRecord = new CaseRecord();
+    record.id = this.caseId.length > 0 ? this.caseId :
+      Date.now().toString(36) + Math.floor(Math.random() * 1679616).toString(36);
+    record.messages = this.caseMessages;
+    record.dossier = this.currentDossier();
+    record.title = this.caseTitleOf(record.messages, record.dossier);
+    record.updatedAt = Date.now();
+    this.caseHistory = [record].concat(this.caseHistory.filter((c: CaseRecord) => c.id !== record.id))
+      .slice(0, MAX_ARCHIVED_CASES);
+  }
+
+  private loadCase(record: CaseRecord | undefined): void {
+    const dossier: DossierState = record !== undefined ? record.dossier : new DossierState();
+    this.caseId = record !== undefined ? record.id : '';
+    this.caseMessages = record !== undefined ? record.messages : [];
+    this.location = dossier.location;
+    this.company = dossier.company;
+    this.salary = dossier.salary;
+    this.timeline = dossier.timeline;
+    this.request = dossier.request;
+    this.details = dossier.details;
+    this.dossierReport = dossier.report;
+    this.reportCitations = dossier.reportCitations;
+    this.caseMessage = '';
+    this.caseAttachment = new FileAttachment();
+    this.caseAttachmentError = '';
+    this.caseError = '';
+    this.reportError = '';
+    this.reportStage = 0;
+    this.caseAnchorTurn = false;
+    this.caseShowJump = false;
+    this.updateProgress();
+    this.showRights(RIGHTS_CHAT);
+    this.schedulePersist();
+    this.saveCaseHistory();
+  }
+
+  // Archives the current case and starts an empty one.
+  private startNewCase(): void {
+    if (this.caseBusy()) {
+      return;
+    }
+    const hadContent: boolean = this.hasCaseContent();
+    const title: string = this.currentCaseTitle();
+    this.archiveCurrentCase();
+    this.sheetKind = 0;
+    this.loadCase(undefined);
+    if (hadContent) {
+      this.getUIContext().getPromptAction().showToast({ message: '已存档「' + title + '」', duration: 1800 });
+    }
+  }
+
+  // Archives the current case and continues an archived one.
+  private openCase(id: string): void {
+    const record: CaseRecord | undefined = this.caseHistory.find((c: CaseRecord) => c.id === id);
+    if (record === undefined || this.caseBusy()) {
+      return;
+    }
+    this.archiveCurrentCase();
+    this.caseHistory = this.caseHistory.filter((c: CaseRecord) => c.id !== id);
+    this.sheetKind = 0;
+    this.loadCase(record);
+  }
+
+  private deleteCase(record: CaseRecord): void {
+    this.getUIContext().showAlertDialog({
+      title: '删除这个案件',
+      message: '「' + record.title + '」的对话、卷宗和分析报告都会从本机删除，无法恢复。证据库不受影响。',
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: this.cx.danger,
+        action: () => {
+          this.caseHistory = this.caseHistory.filter((c: CaseRecord) => c.id !== record.id);
+          this.saveCaseHistory();
+        }
+      }
+    });
+  }
+
+  private saveCaseHistory(): void {
+    try {
+      ChatStateStore.saveCases(this.abilityContext(), this.caseHistory).catch(() => {
+        // Saving the archive is best effort; the current case is unaffected.
+      });
+    } catch (error) {
+      // The page may already be detached from its ability context.
+    }
+  }
+
   private hasDossierInput(): boolean {
     for (let index: number = 0; index < 6; index++) {
       if (this.fieldFilled(index)) {
@@ -801,6 +968,7 @@ struct Index {
     const state: ChatState = new ChatState();
     state.quickMessages = this.quickMessages;
     state.quickSessionId = this.quickSessionId;
+    state.caseId = this.caseId;
     state.caseMessages = this.caseMessages;
     state.dossier.location = this.location;
     state.dossier.company = this.company;
@@ -822,7 +990,7 @@ struct Index {
   private clearLocalRecords(): void {
     this.getUIContext().showAlertDialog({
       title: '清空本机记录',
-      message: '将删除普法咨询及其历史记录、维权对话、卷宗内容、分析报告、证据库和合同审查报告。此操作无法撤销。',
+      message: '将删除普法咨询及其历史记录、全部维权案件（对话、卷宗和分析报告）、证据库和合同审查报告。此操作无法撤销。',
       autoCancel: true,
       primaryButton: {
         value: '取消',
@@ -842,6 +1010,9 @@ struct Index {
           this.saveQuickHistory();
           this.caseMessages = [];
           this.caseAnchorTurn = false;
+          this.caseId = '';
+          this.caseHistory = [];
+          this.saveCaseHistory();
           this.quickError = '';
           this.caseError = '';
           this.location = '';
@@ -1547,7 +1718,50 @@ struct Index {
 
   private showRights(tab: number): void {
     this.rightsTab = tab;
-    this.headerProgress = tab === RIGHTS_EVIDENCE ? 1 : 0;
+    this.syncHeader();
+  }
+
+  // While a contract report is read the tab bar steps aside with the folded
+  // composer, using HdsTabs' own hide and show animations.
+  private setTabBarHidden(hidden: boolean): void {
+    if (hidden === this.tabBarHidden) {
+      return;
+    }
+    this.tabBarHidden = hidden;
+    try {
+      if (hidden) {
+        this.hdsTabsController.applyHideAnimation(HdsAnimationMode.SCROLL_ANIMATION);
+      } else {
+        this.hdsTabsController.applyShowAnimation(HdsAnimationMode.SCROLL_ANIMATION);
+      }
+    } catch (error) {
+      // The tab bar then simply stays in place.
+    }
+  }
+
+  // Matches the header to the page now showing: collapsed where the page
+  // scrolls inside its own component (合同, 证据), otherwise as far as that
+  // page is scrolled.
+  private syncHeader(): void {
+    let progress: number = 1;
+    if (this.currentSection === AppSection.QUICK ||
+      (this.currentSection === AppSection.CASE && this.rightsTab !== RIGHTS_EVIDENCE)) {
+      const scroller: Scroller = this.currentSection === AppSection.QUICK ? this.quickScroller :
+        this.rightsTab === RIGHTS_DOSSIER ? this.dossierScroller : this.caseScroller;
+      let offset: number = 0;
+      try {
+        offset = scroller.currentOffset().yOffset;
+      } catch (error) {
+        // Not laid out yet: the page starts at the top.
+      }
+      progress = this.reduceMotion ? (offset > 72 ? 1 : 0) : Math.max(0, Math.min(1, offset / 132));
+    }
+    if (progress === this.headerProgress) {
+      return;
+    }
+    this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 200, curve: Curve.EaseOut }, () => {
+      this.headerProgress = progress;
+    });
   }
 
   private fillDossier(field: number, value: string): void {
@@ -2177,42 +2391,6 @@ struct Index {
   }
 
   @Builder
-  private TrustChip(res: Resource, label: string) {
-    Row({ space: 5 }) {
-      this.Icon({ res: res, size: 12, color: this.cx.brand })
-      Text(label)
-        .fontSize(10.5)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.cx.muted)
-    }
-    .padding({ left: 9, right: 10, top: 6, bottom: 6 })
-    .backgroundColor(this.cx.surface2)
-    .borderRadius(999)
-    .border({ width: 1, color: this.cx.line })
-  }
-
-  @Builder
-  private TrustStrip() {
-    Row({ space: 7 }) {
-      this.TrustChip($r('app.media.ic_book'), '本地检索')
-      this.TrustChip($r('app.media.ic_shield'), '隐私安全')
-      Row() {
-        Text(this.knowledgeDocumentCount > 0 ? this.knowledgeDocumentCount.toString() : '2790')
-          .fontSize(11)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.cx.brandStrong)
-        Text(' 份资料就绪')
-          .fontSize(10.5)
-          .fontColor(this.cx.brandStrong)
-      }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .backgroundColor(this.cx.tint)
-      .borderRadius(999)
-    }
-    .width('100%')
-  }
-
-  @Builder
   // flat lays an answer straight on the page background at full width, as the
   // 普法 conversation does; otherwise it sits in a card beside the avatar.
   private ChatBubble(message: ChatMessage, flat: boolean = false) {
@@ -2692,6 +2870,7 @@ struct Index {
           Column({ space: 4 }) {
             Text(this.sheetKind === 3 ? '本轮检索依据' :
               this.sheetKind === 4 ? '案件分析报告' :
+              this.sheetKind === SHEET_CASES ? '我的案件' :
               this.sheetKind === SHEET_CHECKLIST ? '证据核对' : '添加咨询材料')
               .fontSize(19)
               .fontWeight(FontWeight.Bold)
@@ -2699,6 +2878,7 @@ struct Index {
             Text(this.sheetKind === 3 ?
               this.sheetCitations.length.toString() + ' 条本地法规片段' :
               this.sheetKind === 4 ? '整理事实、检索依据，再生成报告' :
+              this.sheetKind === SHEET_CASES ? '每个案件有各自的对话、卷宗和报告 · 证据库共用' :
               this.sheetKind === SHEET_CHECKLIST ? '对照回答里的证据清单 · 已有 ' + this.checklistHave().toString()
                 + ' / ' + this.checklistRows.length.toString() :
               '由你主动选择要分析的文件')
@@ -2724,6 +2904,8 @@ struct Index {
         this.CitationDetailBody()
       } else if (this.sheetKind === SHEET_CHECKLIST) {
         this.ChecklistBody()
+      } else if (this.sheetKind === SHEET_CASES) {
+        this.CasesBody()
       } else if (this.sheetKind === 3) {
         Scroll() {
           Column({ space: 10 }) {
@@ -2986,8 +3168,151 @@ struct Index {
   }
 
   @Builder
-  private RightsSegment(label: string, tab: number) {
-    Text(label)
+  private CaseRow(title: string, detail: string, current: boolean, record: CaseRecord | undefined) {
+    Row({ space: 10 }) {
+      Column({ space: 4 }) {
+        Text(title)
+          .fontSize(14)
+          .fontWeight(current ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.cx.text)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        Text(detail)
+          .fontSize(11)
+          .fontColor(this.cx.muted)
+          .width('100%')
+      }
+      .layoutWeight(1)
+      if (current) {
+        Text('当前')
+          .fontSize(10.5)
+          .fontColor(this.cx.gold)
+          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+          .backgroundColor(this.citationChipBg())
+          .borderRadius(9)
+      } else if (record !== undefined) {
+        Text('删除')
+          .fontSize(11.5)
+          .fontColor(this.cx.faint)
+          .padding(6)
+          .onClick(() => {
+            this.deleteCase(record);
+          })
+      }
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor(current ? this.cx.tint : this.cx.surface)
+    .borderRadius(14)
+    .border({ width: 1, color: current ? this.cx.gold : this.cx.line })
+    .onClick(() => {
+      if (record !== undefined) {
+        this.openCase(record.id);
+      } else {
+        this.sheetKind = 0;
+      }
+    })
+  }
+
+  @Builder
+  private CasesBody() {
+    Column({ space: 12 }) {
+      Button('＋ 新案件')
+        .width('100%')
+        .height(42)
+        .fontSize(14)
+        .fontColor(this.cx.onGold)
+        .backgroundColor(this.cx.gold)
+        .borderRadius(13)
+        .enabled(!this.caseBusy() && this.hasCaseContent())
+        .onClick(() => {
+          this.startNewCase();
+        })
+      Scroll() {
+        Column({ space: 10 }) {
+          this.CaseRow(this.currentCaseTitle(),
+            this.caseMessages.length.toString() + ' 条消息 · 卷宗 ' + this.caseProgress.toString() + '%', true, undefined)
+          ForEach(this.caseHistory, (record: CaseRecord) => {
+            this.CaseRow(record.title, new Date(record.updatedAt).toLocaleDateString() + ' · ' +
+              record.messages.length.toString() + ' 条消息' + (record.dossier.report.length > 0 ? ' · 已出报告' : ''),
+              false, record)
+          }, (record: CaseRecord) => record.id + '_' + record.updatedAt.toString())
+          if (this.caseHistory.length === 0) {
+            Text('开始新案件后，之前的案件会存档在这里，可以随时切换回来继续。')
+              .fontSize(11.5)
+              .lineHeight(18)
+              .fontColor(this.cx.muted)
+              .width('100%')
+              .margin({ top: 4 })
+          }
+        }
+        .width('100%')
+        .padding({ bottom: 28 })
+      }
+      .align(Alignment.Top)
+      .scrollBar(BarState.Off)
+      .layoutWeight(1)
+    }
+    .layoutWeight(1)
+    .width('100%')
+  }
+
+  // Current case name, the case list, and a new case, above the 维权 pages.
+  @Builder
+  private CaseBar() {
+    Row({ space: 8 }) {
+      Row({ space: 4 }) {
+        Text(this.currentCaseTitle())
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.cx.text)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .flexShrink(1)
+        // Cases with content: the archive plus the current one unless it is empty.
+        Text(this.caseHistory.length > 0 ?
+          '▾ ' + (this.caseHistory.length + (this.hasCaseContent() ? 1 : 0)).toString() + ' 个案件' : '▾')
+          .fontSize(11)
+          .fontColor(this.cx.muted)
+      }
+      .layoutWeight(1)
+      .height(34)
+      .accessibilityText('我的案件')
+      .onClick(() => {
+        this.sheetKind = SHEET_CASES;
+      })
+      Text('＋ 新案件')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.hasCaseContent() && !this.caseBusy() ? this.cx.gold : this.cx.faint)
+        .padding({ left: 11, right: 11, top: 6, bottom: 6 })
+        .backgroundColor(this.cx.tint)
+        .borderRadius(14)
+        .enabled(this.hasCaseContent() && !this.caseBusy())
+        .onClick(() => {
+          this.startNewCase();
+        })
+    }
+    .width('100%')
+    .padding({ left: 18, right: 16, top: 8 })
+  }
+
+  // Computed here rather than passed in: a by-value builder argument would
+  // keep showing the first value it was given.
+  private rightsLabel(tab: number): string {
+    if (tab === RIGHTS_DOSSIER) {
+      return '卷宗 ' + this.caseProgress.toString() + '%';
+    }
+    if (tab === RIGHTS_EVIDENCE) {
+      return this.evidenceCount > 0 ? '证据 ' + this.evidenceCount.toString() : '证据';
+    }
+    return '梳理';
+  }
+
+  @Builder
+  private RightsSegment(tab: number) {
+    Text(this.rightsLabel(tab))
       .fontSize(13.5)
       .fontWeight(this.rightsTab === tab ? FontWeight.Bold : FontWeight.Regular)
       .fontColor(this.rightsTab === tab ? this.cx.text : this.cx.muted)
@@ -2999,7 +3324,7 @@ struct Index {
       .shadow(this.rightsTab === tab ? { radius: 6, color: this.cx.softShadow, offsetY: 1 } :
         { radius: 0, color: Color.Transparent, offsetY: 0 })
       .animation({ duration: this.reduceMotion ? 0 : 160, curve: Curve.EaseOut })
-      .accessibilityText(label)
+      .accessibilityText(this.rightsLabel(tab))
       .onClick(() => {
         this.showRights(tab);
       })
@@ -3010,22 +3335,34 @@ struct Index {
   @Builder
   private RightsPage() {
     Column() {
+      this.CaseBar()
       Row() {
-        this.RightsSegment('梳理', RIGHTS_CHAT)
-        this.RightsSegment('卷宗 ' + this.caseProgress.toString() + '%', RIGHTS_DOSSIER)
-        this.RightsSegment(this.evidenceCount > 0 ? '证据 ' + this.evidenceCount.toString() : '证据', RIGHTS_EVIDENCE)
+        this.RightsSegment(RIGHTS_CHAT)
+        this.RightsSegment(RIGHTS_DOSSIER)
+        this.RightsSegment(RIGHTS_EVIDENCE)
       }
       .padding(3)
       .backgroundColor(this.cx.surface2)
       .borderRadius(12)
-      .margin({ left: 16, right: 16, top: 10, bottom: 2 })
-      Column() {
-        if (this.rightsTab === RIGHTS_DOSSIER) {
-          this.DossierPage()
-        } else if (this.rightsTab === RIGHTS_EVIDENCE) {
-          this.EvidencePane()
-        } else {
+      .margin({ left: 16, right: 16, top: 4, bottom: 2 })
+      // 梳理 and 卷宗 stay alive while hidden, so each keeps its scroll
+      // position and the header can follow it. 证据 is rebuilt each time: it
+      // reads its starting query when it appears.
+      Stack() {
+        Column() {
           this.CaseChat()
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.rightsTab === RIGHTS_CHAT ? Visibility.Visible : Visibility.None)
+        Column() {
+          this.DossierPage()
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.rightsTab === RIGHTS_DOSSIER ? Visibility.Visible : Visibility.None)
+        if (this.rightsTab === RIGHTS_EVIDENCE) {
+          this.EvidencePane()
         }
       }
       .layoutWeight(1)
@@ -3080,6 +3417,9 @@ struct Index {
       embedded: true,
       bottomInset: this.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,
       dataVersion: this.localDataVersion,
+      onReadingChange: (reading: boolean) => {
+        this.setTabBarHidden(reading);
+      },
       onCountChange: (count: number) => {
         this.contractReportCount = count;
       },
@@ -3616,7 +3956,9 @@ struct Index {
           (this.isDark ? '#2A2416' : '#F6EAD2') : this.cx.tint)
         .borderRadius(10)
         Blank()
-        this.Icon({ res: $r('app.media.ic_send'), size: 13, color: this.cx.faint })
+        Text('›')
+          .fontSize(20)
+          .fontColor(this.cx.faint)
       }
       .width('100%')
       Text(item.title)
@@ -3666,7 +4008,7 @@ struct Index {
           .fontSize(11)
           .fontColor(this.cx.brand)
           .margin({ top: 5 })
-        Text('专业可靠 · 隐私安全 · 本地检索')
+        Text('在手机上检索 · 不联网 · 回答附法条依据')
           .fontSize(9.5)
           .fontColor(this.cx.muted)
           .margin({ top: 5 })
@@ -3744,6 +4086,12 @@ struct Index {
           .onChange((value: string) => {
             this.question = value;
           })
+        // 本地法规检索 is always on, as in the pinned composer.
+        Column() {
+          this.Icon({ res: $r('app.media.ic_book'), size: 14, color: this.cx.ok })
+        }
+        .margin({ bottom: 14 })
+        .accessibilityText('本地法规检索已开启')
         Button({ type: ButtonType.Circle, stateEffect: true }) {
           this.Icon({ res: $r('app.media.ic_send'), size: 18, color: this.cx.onGold })
         }
@@ -3761,16 +4109,6 @@ struct Index {
       .backgroundColor(this.cx.surface2)
       .borderRadius(26)
       .border({ width: 1, color: this.cx.line })
-      Row({ space: 5 }) {
-        this.Icon({ res: $r('app.media.ic_book'), size: 11, color: this.cx.ok })
-        Text('本地法规检索 已开启')
-          .fontSize(10)
-          .fontColor(this.cx.ok)
-      }
-      .padding({ left: 10, right: 11, top: 5, bottom: 5 })
-      .backgroundColor(this.cx.okBg)
-      .borderRadius(999)
-      .margin({ top: 10 })
       if (this.quickAttachmentError.length > 0) {
         this.AttachmentError(this.quickAttachmentError)
       }
@@ -3980,7 +4318,6 @@ struct Index {
       Column({ space: 14 }) {
         if (this.quickMessages.length === 0) {
           this.Composer()
-          this.TrustStrip()
           Row() {
             Text('常见问题')
               .fontSize(16)
@@ -4192,6 +4529,7 @@ struct Index {
       })
     }
     .id(CASE_SCROLL_ID)
+    .align(Alignment.Top)
     .scrollBar(BarState.Off)
     .width('100%')
     .height('100%')
@@ -4651,7 +4989,7 @@ struct Index {
         Column({ space: 10 }) {
           this.SettingCardHeader($r('app.media.ic_folder'), '本机记录')
           this.SettingRow('普法咨询', this.quickHistory.length.toString() + ' 段历史')
-          this.SettingRow('维权对话', this.caseMessages.length.toString() + ' 条消息')
+          this.SettingRow('维权案件', (this.caseHistory.length + (this.hasCaseContent() ? 1 : 0)).toString() + ' 个')
           this.SettingRow('卷宗完整度', this.caseProgress.toString() + '%')
           this.SettingRow('证据库', this.evidenceCount.toString() + ' 份材料')
           this.SettingRow('合同审查', this.contractReportCount.toString() + ' 份报告')
@@ -4828,7 +5166,12 @@ struct Index {
   build() {
     Stack() {
       Column() {
-        this.Header()
+        // A contract report has its own compact header, so the page's is
+        // dropped to give the text more room.
+        if (!(this.currentSection === AppSection.CONTRACT &&
+          (this.contractMode === CONTRACT_MODE_REPORT || this.contractMode === CONTRACT_MODE_CLAUSE))) {
+          this.Header()
+        }
         HdsTabs({
           barPosition: BarPosition.End,
           index: this.currentSection,
@@ -4856,10 +5199,8 @@ struct Index {
         .animationDuration(220)
         .onChange((index: number) => {
           this.currentSection = index as AppSection;
-          // 合同 and 证据 scroll inside their own components, so the header
-          // stays collapsed there.
-          this.headerProgress = index === AppSection.CONTRACT ||
-            (index === AppSection.CASE && this.rightsTab === RIGHTS_EVIDENCE) ? 1 : 0;
+          this.setTabBarHidden(false);
+          this.syncHeader();
         })
         .layoutWeight(1)
         .width('100%')
@@ -4872,7 +5213,8 @@ struct Index {
       })
       .bindSheet(this.sheetKind !== 0, this.UnifiedSheet(), {
         height: this.sheetKind === 3 || this.sheetKind === 4 ? '72%' :
-        this.sheetKind === SHEET_CITATION || this.sheetKind === SHEET_CHECKLIST ? '64%' : 290,
+        this.sheetKind === SHEET_CITATION || this.sheetKind === SHEET_CHECKLIST || this.sheetKind === SHEET_CASES ?
+          '64%' : 290,
         preferType: SheetType.BOTTOM,
         dragBar: true,
         showClose: false,

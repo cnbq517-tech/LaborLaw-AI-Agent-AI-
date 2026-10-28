@@ -5,10 +5,12 @@
 
 import { readFileSync } from 'node:fs';
 import { AI_RULE_ID, ContractAi, ReviewLaw } from './ContractAi.ts';
+import { ContractDocument, DocLine, DocSegment } from './ContractDocument.ts';
 import { ContractLaws } from './ContractLaws.ts';
 import { ContractPrivacy } from './ContractPrivacy.ts';
 import { ContractRules } from './ContractRules.ts';
 import { ContractStructure } from './ContractStructure.ts';
+import { SAMPLE_CONTRACT_CITY, SAMPLE_CONTRACT_TEXT } from './SampleContract.ts';
 import { FactSheet, Finding, StructureAudit, TERM_OPEN, TERM_TASK } from './ContractTypes.ts';
 
 interface Case {
@@ -48,6 +50,16 @@ const CASES: Case[] = [
     wholeContract: true,
     expect: ['R014@C00', 'R001@C02', 'R003@C02', 'R005@C06', 'R007@C07', 'R008@C07', 'R010@C05', 'R011@C05',
       'R012@C03', 'R013@C10', 'R017@C08', 'R016@C09'],
+    warnings: {}
+  },
+  {
+    // The built-in sample on the 合同 page: each red line it is meant to show.
+    name: '内置示例合同',
+    text: SAMPLE_CONTRACT_TEXT,
+    wholeContract: true,
+    facts: { city: SAMPLE_CONTRACT_CITY },
+    expect: ['R001@C01', 'R003@C04', 'R005@C08', 'R007@C09', 'R010@C05', 'R013@C07', 'R019@C10', 'R023@C04',
+      'R008@C09', 'R011@C04', 'R018@C03', 'R012@C02', 'R015a@C06', 'R017@C13', 'R016@C12', 'R020@C06', 'R023@C04'],
     warnings: {}
   },
   // Probation (第十九条).
@@ -238,7 +250,7 @@ check('个人信息脱敏', !/张三|11010519900307123X|13812345678|朝阳区|62
 const laws: ReviewLaw[] = [new ReviewLaw('K1', '中华人民共和国劳动合同法（2012修正）', '第二十五条', '……'),
   new ReviewLaw('K2', '中华人民共和国劳动合同法（2012修正）', '第三十五条', '……')];
 const reply: string = '<think>先看条款</think>```json\n{"findings":[' +
-  '{"anchor_id":"C02","topic":"调岗","nature":"谈判点","severity":"中","bargain":"应谈项","reason":"单方调岗","law_refs":["K2","K9","《劳动法》第一条"]},' +
+  '{"anchor_id":"C02","quote":"工作地点为全国","topic":"调岗","nature":"谈判点","severity":"中","bargain":"应谈项","reason":"单方调岗","law_refs":["K2","K9","《劳动法》第一条"]},' +
   '{"anchor_id":"第三条","topic":"x","nature":"无效","severity":"红线","reason":"错位"},' +
   '{"anchor_id":"C03","topic":"罚则","nature":"无效","severity":"红线","bargain":"乱写","reason":"没有依据的无效"},' +
   '{"anchor_id":"C00","topic":"工资","nature":"缺失","severity":"高","reason":"未约定工资数额","confidence":7}]}\n```';
@@ -250,6 +262,7 @@ check('模型回复：只保留候选法条编号', JSON.stringify(byTopic('调�
   JSON.stringify(['《中华人民共和国劳动合同法（2012修正）》第三十五条']), JSON.stringify(byTopic('调岗')?.lawRefs));
 check('模型回复：无依据的「无效」降为待确认', byTopic('罚则')?.nature === '待确认' && byTopic('罚则')?.severity === '中' &&
   byTopic('罚则')?.bargain === '应谈项', JSON.stringify(byTopic('罚则')));
+check('模型回复：保留原文摘录', byTopic('调岗')?.quote === '工作地点为全国', JSON.stringify(byTopic('调岗')));
 check('模型回复：置信度收敛到 0–1', byTopic('工资')?.confidence === 1, JSON.stringify(byTopic('工资')));
 check('模型回复：无法解析', !ContractAi.parse('抱歉，我无法完成', ['C01'], laws).ok, '');
 
@@ -267,6 +280,55 @@ const sh = ContractRules.run(ContractStructure.audit('第一条 劳动报酬\n�
   '第一条 劳动报酬\n乙方月工资3000元，试用期工资为约定工资的80%。', Object.assign(new FactSheet(), { city: '上海' }));
 check('最低工资：试用期按比例折算', sh.findings.some((f: Finding) => f.ruleId === 'R023' && f.reason.includes('试用期工资约2400元')),
   JSON.stringify(sh.findings.map((f: Finding) => f.reason)));
+
+// Highlights and reasoning on the sample contract: each finding marks the
+// words it is about, inside its own clause, and rule findings explain
+// themselves.
+{
+  const facts: FactSheet = Object.assign(new FactSheet(), { city: SAMPLE_CONTRACT_CITY });
+  const audit: StructureAudit = ContractStructure.audit(SAMPLE_CONTRACT_TEXT, false);
+  const t: string = ContractStructure.normalize(SAMPLE_CONTRACT_TEXT);
+  const findings: Finding[] = ContractRules.run(audit.anchors, SAMPLE_CONTRACT_TEXT, facts).findings;
+  const marked = (rule: string): string[] => findings.filter((f: Finding) => f.ruleId === rule && f.start >= 0)
+    .map((f: Finding) => t.substring(f.start, f.end));
+  const expectMarks: string[][] = [
+    ['R001', '试用期三个月'], ['R003', '试用期工资为约定工资的70%'], ['R005', '违约金20000元'],
+    ['R007', '离职后三年'], ['R010', '自愿放弃缴纳社会保险'], ['R013', '押金'], ['R019', '不得怀孕生育'],
+    ['R011', '已包含全部加班费'], ['R020', '罚款'], ['R016', '商事仲裁'], ['R008', '离职后三年内'], ['R023', '2,600元']
+  ];
+  for (const pair of expectMarks) {
+    const got: string[] = marked(pair[0]);
+    check(`标注：${pair[0]} 标在「${pair[1]}」`, got.some((m: string) => m.includes(pair[1])), JSON.stringify(got));
+  }
+  const outside: Finding[] = findings.filter((f: Finding) => {
+    if (f.start < 0) {
+      return f.anchorId !== 'C00' && !['R017', 'R018'].includes(f.ruleId) && false;
+    }
+    const a = audit.anchors.find((x) => x.anchorId === f.anchorId);
+    return a === undefined || f.start < a.start || f.end > a.end;
+  });
+  check('标注都在所属条款内', outside.length === 0, JSON.stringify(outside.map((f: Finding) => f.ruleId)));
+  check('每条规则结论都有审查过程', findings.every((f: Finding) => f.trace.length >= 3),
+    JSON.stringify(findings.filter((f: Finding) => f.trace.length < 3).map((f: Finding) => f.ruleId)));
+  // The annotated view: lines rebuild the text, and highlighted pieces carry
+  // their findings.
+  const lines: DocLine[] = ContractDocument.lines(t, audit.anchors, findings);
+  const rebuilt: string = lines.map((l: DocLine) => l.segments.map((g: DocSegment) => g.text).join('')).join('\n');
+  check('原文视图：分行后文字不变', rebuilt === t.split('\n').filter((x: string) => x.trim().length > 0).join('\n'), rebuilt);
+  const r003: number = findings.findIndex((f: Finding) => f.ruleId === 'R003');
+  const pay: DocSegment | undefined = lines.flatMap((l: DocLine) => l.segments)
+    .find((g: DocSegment) => g.text.includes('70%'));
+  check('原文视图：重叠时取更严重的那条', pay !== undefined && findings[pay.finding].severity === '红线' &&
+    (pay.finding === r003 || findings[pay.finding].ruleId === 'R023'), JSON.stringify(pay));
+  check('原文视图：条款标题行加粗', lines.filter((l: DocLine) => l.heading).length === 13, String(lines.filter((l) => l.heading).length));
+  const order: number[] = ContractDocument.order(findings, audit.anchors);
+  check('原文视图：导航按原文顺序', order.length === findings.length &&
+    findings[order[0]].anchorId === 'C01' && findings[order[order.length - 1]].anchorId === 'C13',
+    JSON.stringify(order.map((k: number) => findings[k].anchorId)));
+  const r023: Finding | undefined = findings.find((f: Finding) => f.ruleId === 'R023' && f.reason.includes('1820'));
+  check('审查过程含计算', r023 !== undefined && r023.trace.some((s: string) => s.includes('2600 元 × 70% ≈ 1820 元')),
+    JSON.stringify(r023?.trace));
+}
 
 const sanity: number[] = [ContractRules.probationCap(36), ContractRules.probationCap(35),
   ContractRules.probationCap(TERM_OPEN), ContractRules.probationCap(TERM_TASK)];
