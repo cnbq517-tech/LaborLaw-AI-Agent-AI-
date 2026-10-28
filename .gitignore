@@ -38,3 +38,6 @@ local.properties
 *.log
 .claude/
 .DS_Store
+
+# 内置模型服务凭证（tools/harmony/builtin-service/set.sh 生成），绝不能提交
+harmony-app/entry/src/main/resources/rawfile/builtin_service.json

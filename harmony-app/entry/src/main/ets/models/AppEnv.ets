@@ -11,13 +11,28 @@ export class AppEnv {
   themeMode: number = 0;
   reduceMotion: boolean = false;
   keyboardVisible: boolean = false;
+  // The user's own model service, edited in 我的.
   baseUrl: string = 'https://api.openai.com/v1';
   modelName: string = '';
   apiKey: string = '';
+  // The service the app ships with (undefined in builds without one), whether
+  // it is in use, and how many requests it served today.
+  builtin: ApiConfig | undefined = undefined;
+  useBuiltin: boolean = false;
+  quotaUsed: number = 0;
   showReasoning: boolean = true;
   autoExpandReasoning: boolean = true;
 
+  usingBuiltin(): boolean {
+    return this.useBuiltin && this.builtin !== undefined;
+  }
+
+  // The service requests go to.
   config(): ApiConfig {
+    return this.usingBuiltin() ? this.builtin! : this.customConfig();
+  }
+
+  customConfig(): ApiConfig {
     return new ApiConfig(this.baseUrl, this.modelName, this.apiKey);
   }
 }

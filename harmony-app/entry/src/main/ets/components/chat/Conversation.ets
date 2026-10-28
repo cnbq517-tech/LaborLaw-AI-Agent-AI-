@@ -34,6 +34,8 @@ export class ConversationEvents {
   // ErrorNotice's 去「我的」.
   openSettings: () => void = () => {
   };
+  // ErrorNotice's 只看法条, or undefined where it is not offered.
+  lawsOnly: (() => void) | undefined = undefined;
   // A right swipe on 普法 pulls out the history drawer.
   swipeStart: () => void = () => {
   };
@@ -149,7 +151,8 @@ export struct Conversation {
         cx: this.env.cx,
         onSettings: () => {
           this.events.openSettings();
-        }
+        },
+        onLawsOnly: this.events.lawsOnly
       })
     }
   }

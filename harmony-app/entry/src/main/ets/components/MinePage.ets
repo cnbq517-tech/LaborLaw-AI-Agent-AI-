@@ -1,4 +1,5 @@
 import { AppEnv } from '../models/AppEnv';
+import { DAILY_LIMIT, ModelQuota } from '../services/ModelQuota';
 import { ChatIcon } from './chat/ChatViews';
 
 // 我的, opened from the round button beside the tab bar: the model service,
@@ -19,6 +20,8 @@ export class MineActions {
   saveShowReasoning: (value: boolean) => void = (value: boolean) => {
   };
   saveAutoExpand: (value: boolean) => void = (value: boolean) => {
+  };
+  setBuiltin: (value: boolean) => void = (value: boolean) => {
   };
 }
 
@@ -150,50 +153,110 @@ export struct MinePage {
   }
 
   @Builder
+  private ServiceSeg(label: string, builtin: boolean) {
+    Text(label)
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.env.useBuiltin === builtin ? this.env.cx.onBrand : this.env.cx.muted)
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
+      .height(34)
+      .borderRadius(9)
+      .backgroundColor(this.env.useBuiltin === builtin ? this.env.cx.brand : Color.Transparent)
+      .onClick(() => {
+        this.actions.setBuiltin(builtin);
+      })
+  }
+
+  // The service the app ships with: nothing to set up, a daily allowance.
+  @Builder
+  private BuiltinStatus() {
+    Column({ space: 10 }) {
+      this.SettingRow('状态', '已就绪 · 无需配置')
+      this.SettingRow('模型', this.env.builtin!.model + '（应用提供）')
+      this.SettingRow('今日可用', ModelQuota.remaining(this.env.quotaUsed).toString() + ' / ' +
+        DAILY_LIMIT.toString() + ' 次')
+      Progress({ value: ModelQuota.remaining(this.env.quotaUsed), total: DAILY_LIMIT, type: ProgressType.Linear })
+        .width('100%')
+        .color(this.env.cx.gold)
+        .backgroundColor(this.env.cx.surface2)
+      Text('普法、维权对话、卷宗报告和合同 AI 审查共用次数，每天 0 点恢复。需要更多时可切到「自定义」使用自己的 API Key，那里填的内容切换后仍会保留。')
+        .fontSize(10.5)
+        .lineHeight(16)
+        .fontColor(this.env.cx.muted)
+        .width('100%')
+    }
+    .width('100%')
+  }
+
+  // The user's own OpenAI-compatible service.
+  @Builder
+  private CustomService() {
+    Column({ space: 14 }) {
+      this.SettingsInput('Base URL', this.env.baseUrl, 'https://…/v1', 0)
+      this.SettingsInput('模型名称', this.env.modelName, '填写服务商提供的模型 ID', 1)
+      this.SettingsInput('API Key', this.env.apiKey, '输入后将安全保存在本机', 2)
+      Row({ space: 6 }) {
+        ChatIcon({ res: $r('app.media.ic_shield'), size: 12, color: this.env.cx.ok })
+        Text('API Key 使用 Asset Store 加密保存于本机，不写入代码或同步')
+          .fontSize(10.5)
+          .lineHeight(15)
+          .fontColor(this.env.cx.muted)
+          .layoutWeight(1)
+      }
+      .width('100%')
+      Row() {
+        Column() {
+          Text('连接状态')
+            .fontSize(11)
+            .fontColor(this.env.cx.muted)
+          Text(this.connectionState)
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.connectionState.includes('成功') ? this.env.cx.ok : this.env.cx.text)
+            .margin({ top: 4 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        Button('测试连接')
+          .height(42)
+          .fontSize(14)
+          .fontColor(this.env.cx.onBrand)
+          .backgroundColor(this.env.cx.brand)
+          .borderRadius(13)
+          .enabled(!this.configBusy)
+          .onClick(() => {
+            this.actions.test();
+          })
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+      .padding({ top: 4 })
+    }
+    .width('100%')
+  }
+
+  @Builder
   private Settings() {
     Scroll() {
       Column({ space: 14 }) {
         Column({ space: 14 }) {
-          this.SettingCardHeader($r('app.media.ic_gear'), '模型连接')
-          this.SettingsInput('Base URL', this.env.baseUrl, 'https://…/v1', 0)
-          this.SettingsInput('模型名称', this.env.modelName, '填写服务商提供的模型 ID', 1)
-          this.SettingsInput('API Key', this.env.apiKey, '输入后将安全保存在本机', 2)
-          Row({ space: 6 }) {
-            ChatIcon({ res: $r('app.media.ic_shield'), size: 12, color: this.env.cx.ok })
-            Text('API Key 使用 Asset Store 加密保存于本机，不写入代码或同步')
-              .fontSize(10.5)
-              .lineHeight(15)
-              .fontColor(this.env.cx.muted)
-              .layoutWeight(1)
-          }
-          .width('100%')
-          Row() {
-            Column() {
-              Text('连接状态')
-                .fontSize(11)
-                .fontColor(this.env.cx.muted)
-              Text(this.connectionState)
-                .fontSize(14)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(this.connectionState.includes('成功') ? this.env.cx.ok : this.env.cx.text)
-                .margin({ top: 4 })
+          this.SettingCardHeader($r('app.media.ic_gear'), '模型服务')
+          if (this.env.builtin !== undefined) {
+            Row() {
+              this.ServiceSeg('内置服务', true)
+              this.ServiceSeg('自定义', false)
             }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
-            Button('测试连接')
-              .height(42)
-              .fontSize(14)
-              .fontColor(this.env.cx.onBrand)
-              .backgroundColor(this.env.cx.brand)
-              .borderRadius(13)
-              .enabled(!this.configBusy)
-              .onClick(() => {
-                this.actions.test();
-              })
+            .width('100%')
+            .padding(3)
+            .backgroundColor(this.env.cx.surface2)
+            .borderRadius(12)
           }
-          .width('100%')
-          .alignItems(VerticalAlign.Center)
-          .padding({ top: 4 })
+          if (this.env.usingBuiltin()) {
+            this.BuiltinStatus()
+          } else {
+            this.CustomService()
+          }
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
@@ -342,7 +405,9 @@ export struct MinePage {
 
         Column() {
           this.SettingCardHeader($r('app.media.ic_shield'), '隐私说明')
-          Text('用户主动发送咨询时，问题、选中的附件内容和相关法条片段才会发给你配置的模型服务商；本地检索全程不联网。' +
+          Text('用户主动发送咨询时，问题、选中的附件内容和相关法条片段才会发给' +
+            (this.env.usingBuiltin() ? '应用提供的模型服务（' + this.env.builtin!.model + '）' : '你配置的模型服务商') +
+            '；本地检索全程不联网。' +
             '证据图片的识别和合同的规则审查都在手机上完成；开启合同 AI 审查时，只发送替换掉个人信息后的条款文字。')
             .fontSize(12)
             .lineHeight(19)

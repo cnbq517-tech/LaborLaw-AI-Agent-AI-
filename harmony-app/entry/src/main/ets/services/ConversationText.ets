@@ -1,4 +1,4 @@
-import { ChatMessage, ChatRole } from '../models/AppModels';
+import { ChatMessage, ChatRole, LawCitation } from '../models/AppModels';
 import { QuickSession } from '../models/ChatState';
 
 // Titles, times and grouping for the 普法 history drawer, and which errors
@@ -17,6 +17,8 @@ export class HistoryGroup {
 const DAY: number = 24 * 60 * 60 * 1000;
 // Ends every "model not configured" error.
 export const CONFIG_HINT: string = '，请先在「我的」中配置模型服务';
+// The built-in service's daily allowance is used up.
+export const QUOTA_ERROR: string = '今天的内置次数已用完，明天 0 点恢复。也可以在「我的」填入自己的 API Key 继续使用；本地法规检索和合同规则审查不受影响。';
 
 export class ConversationText {
   // The first line of the first question.
@@ -85,7 +87,26 @@ export class ConversationText {
   // Errors the user fixes in 我的: no model configured, or the service
   // rejected the key. Network, index and permission errors are not.
   static needsModelSettings(message: string): boolean {
-    return message.endsWith(CONFIG_HINT) || message.includes('认证失败') || message.includes('接口或模型不存在');
+    return message.endsWith(CONFIG_HINT) || message === QUOTA_ERROR || message.includes('认证失败') ||
+      message.includes('接口或模型不存在');
+  }
+
+  static isQuotaError(message: string): boolean {
+    return message === QUOTA_ERROR;
+  }
+
+  // The answer 只看法条 gives without a model: the local search results, each
+  // with its citation chip and the start of its text.
+  static lawsOnlyAnswer(citations: LawCitation[]): string {
+    if (citations.length === 0) {
+      return '本地法规库里没有找到相关条文，可以换个说法再试，或在「我的」填入自己的 API Key。';
+    }
+    const items: string[] = citations.map((c: LawCitation, i: number) => {
+      const excerpt: string = c.excerpt.replace(/\s+/g, ' ').trim();
+      return (i + 1).toString() + '. ' + c.title + (c.article.length > 0 ? ' · ' + c.article : '') + ' [' + c.id +
+        ']\n' + (excerpt.length > 120 ? excerpt.substring(0, 120) + '…' : excerpt);
+    });
+    return '今天的内置次数已用完，以下是本地法规库检索到的相关条文，未经模型分析，请结合原文判断：\n\n' + items.join('\n\n');
   }
 
   // 12 秒, or 1 分 5 秒.

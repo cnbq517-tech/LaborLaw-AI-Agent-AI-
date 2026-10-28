@@ -101,6 +101,14 @@ export struct ContractReview {
   @Prop baseUrl: string = '';
   @Prop modelName: string = '';
   @Prop apiKey: string = '';
+  // 内置模型 or 你配置的模型, for the AI review switch.
+  @Prop modelLabel: string = '你配置的模型';
+  // Counts an AI review against the built-in allowance; returns why it cannot
+  // run, or '' (always '' on the user's own service).
+  takeModelRequest: () => string = () => '';
+  // Gives the request back when the AI review failed outright.
+  returnModelRequest: () => void = () => {
+  };
   @Prop defaultCity: string = '';
   onClose: () => void = () => {
   };
@@ -309,13 +317,17 @@ export struct ContractReview {
     this.busy = true;
     this.progress = '本地规则审查完成';
     try {
-      if (this.useAi && this.aiReady()) {
+      const refusal: string = this.useAi && this.aiReady() ? this.takeModelRequest() : '';
+      if (refusal.length > 0) {
+        report.aiNote = refusal;
+      } else if (this.useAi && this.aiReady()) {
         this.handle = new StreamHandle();
         await ContractReviewService.withAi(report, this.config(), this.handle, (p: ReviewProgress) => {
           this.progress = p.stage + (p.total > 0 ? ` ${Math.min(p.done + 1, p.total)}/${p.total}` : '');
         });
       }
     } catch (error) {
+      this.returnModelRequest();
       report.aiState = AI_FAILED;
       report.aiNote = error instanceof Error ? error.message : 'AI 审查失败';
     } finally {
@@ -869,7 +881,7 @@ export struct ContractReview {
           Row() {
             Column({ space: 3 }) {
               Text('AI 深度审查').fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.cx.text)
-              Text(this.aiReady() ? '用你配置的模型逐条审查并做反向推演' : '未配置模型 API，只做本地规则审查')
+              Text(this.aiReady() ? '用' + this.modelLabel + '逐条审查并做反向推演' : '未配置模型 API，只做本地规则审查')
                 .fontSize(11)
                 .fontColor(this.cx.muted)
             }

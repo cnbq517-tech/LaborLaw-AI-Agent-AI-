@@ -27,8 +27,9 @@ import { CaseRecord, ChatState, DossierState, MAX_QUICK_SESSIONS, QuickSession }
 import { CaseArchive } from '../services/CaseArchive';
 import { ChatStateStore } from '../services/ChatStateStore';
 import { ConversationPrompts } from '../services/ConversationPrompts';
-import { CONFIG_HINT, ConversationText } from '../services/ConversationText';
-import { ConfigStore } from '../services/ConfigStore';
+import { CONFIG_HINT, ConversationText, QUOTA_ERROR } from '../services/ConversationText';
+import { MIN_INTERVAL_MS, ModelQuota } from '../services/ModelQuota';
+import { ConfigStore, QuotaRecord } from '../services/ConfigStore';
 import { ChecklistFloatService } from '../services/ChecklistFloatService';
 import { CitationText, HighlightRange } from '../services/CitationText';
 import { KnowledgeService } from '../services/KnowledgeService';
@@ -122,6 +123,7 @@ class StreamOutcome {
 }
 
 const SHOW_REASONING_KEY: string = 'show_reasoning';
+const USE_BUILTIN_KEY: string = 'use_builtin';
 const EXPAND_REASONING_KEY: string = 'expand_reasoning';
 
 @Entry
@@ -201,6 +203,8 @@ struct Index {
   private detailLeads: string[] = [];
   private detailReturnSheet: number = 0;
   private textSelecting: boolean = false;
+  private quotaDay: string = '';
+  private lastModelRequest: number = 0;
   private chatActions: ChatActions = new ChatActions();
   private mineActions: MineActions = new MineActions();
   private drawerActions: DrawerActions = new DrawerActions();
@@ -861,21 +865,102 @@ struct Index {
   }
 
   private async loadConfig(): Promise<void> {
+    let customReady: boolean = false;
     try {
       const config: ApiConfig = await ConfigStore.load(this.abilityContext());
       this.env.baseUrl = config.baseUrl;
       this.env.modelName = config.model;
       this.env.apiKey = config.apiKey;
-      if (config.apiKey.length > 0 && config.model.length > 0) {
+      customReady = config.apiKey.length > 0 && config.model.length > 0;
+      if (customReady) {
         this.connectionState = '已载入本机配置';
       }
     } catch (error) {
       this.connectionState = '读取本机配置失败';
     }
+    this.env.builtin = await ConfigStore.loadBuiltin(this.abilityContext());
+    if (this.env.builtin !== undefined) {
+      // Until the user picks, the built-in service is used unless they had
+      // already set up their own.
+      const chosen: boolean = await ConfigStore.hasFlag(this.abilityContext(), USE_BUILTIN_KEY);
+      this.env.useBuiltin = chosen ? await ConfigStore.loadFlag(this.abilityContext(), USE_BUILTIN_KEY, true) :
+        !customReady;
+      const record: QuotaRecord = await ConfigStore.loadQuota(this.abilityContext());
+      this.quotaDay = ModelQuota.day(new Date());
+      this.env.quotaUsed = ModelQuota.usedToday(record.day, record.used, this.quotaDay);
+    }
+  }
+
+  private setUseBuiltin(value: boolean): void {
+    this.env.useBuiltin = value;
+    this.saveReasoningFlag(USE_BUILTIN_KEY, value);
+  }
+
+  // Counts a request on the built-in service, or returns why it cannot be
+  // made. Requests on the user's own service are not counted.
+  private takeModelRequest(): string {
+    if (!this.env.usingBuiltin()) {
+      return '';
+    }
+    const today: string = ModelQuota.day(new Date());
+    if (today !== this.quotaDay) {
+      this.quotaDay = today;
+      this.env.quotaUsed = 0;
+    }
+    if (ModelQuota.remaining(this.env.quotaUsed) === 0) {
+      return QUOTA_ERROR;
+    }
+    const now: number = Date.now();
+    if (now - this.lastModelRequest < MIN_INTERVAL_MS) {
+      return '请求太频繁，请稍后再试';
+    }
+    this.lastModelRequest = now;
+    this.env.quotaUsed++;
+    this.saveQuota();
+    return '';
+  }
+
+  // A request that failed before any answer does not use the allowance.
+  private returnModelRequest(): void {
+    if (this.env.usingBuiltin() && this.env.quotaUsed > 0) {
+      this.env.quotaUsed--;
+      this.saveQuota();
+    }
+  }
+
+  private saveQuota(): void {
+    ConfigStore.saveQuota(this.abilityContext(), new QuotaRecord(ModelQuota.day(new Date()), this.env.quotaUsed))
+      .catch(() => {
+        // The count still applies for this session.
+      });
+  }
+
+  // 只看法条: when the built-in allowance is used up, answers the pending
+  // 普法 question from the local law index alone.
+  private async answerFromLawsOnly(): Promise<void> {
+    const prompt: string = this.quick.input.trim();
+    if (prompt.length === 0 || this.quick.sending || !KnowledgeService.isReady()) {
+      return;
+    }
+    this.quick.error = '';
+    try {
+      const knowledge: KnowledgeResult = await KnowledgeService.search(prompt);
+      this.quick.messages = this.quick.messages.concat([
+        new ChatMessage(ChatRole.USER, prompt),
+        new ChatMessage(ChatRole.ASSISTANT, ConversationText.lawsOnlyAnswer(knowledge.citations), knowledge.citations)
+      ]);
+      this.quick.input = '';
+      this.quick.anchorTurn = true;
+      this.scrollTurnToTop(STREAM_QUICK);
+      this.recordQuickSession();
+      this.schedulePersist();
+    } catch (error) {
+      this.quick.error = this.errorMessage(error);
+    }
   }
 
   private async saveConfig(): Promise<boolean> {
-    const config: ApiConfig = this.env.config();
+    const config: ApiConfig = this.env.customConfig();
     const validationError: string = AiApiClient.validateConfig(config);
     if (validationError.length > 0) {
       this.connectionState = validationError;
@@ -907,7 +992,7 @@ struct Index {
       new ChatMessage(ChatRole.USER, '请确认连接。')
     ];
     try {
-      await AiApiClient.send(this.env.config(), messages);
+      await AiApiClient.send(this.env.customConfig(), messages);
       this.connectionState = '连接成功，可以开始咨询';
     } catch (error) {
       this.connectionState = this.errorMessage(error);
@@ -938,6 +1023,11 @@ struct Index {
     }
     if (!KnowledgeService.isReady()) {
       this.quick.error = '本地法律资料尚未就绪，请稍后再试';
+      return;
+    }
+    const quotaError: string = this.takeModelRequest();
+    if (quotaError.length > 0) {
+      this.quick.error = quotaError;
       return;
     }
     this.quickQuestionController.stopEditing();
@@ -979,6 +1069,7 @@ struct Index {
         ]);
       }
     } catch (error) {
+      this.returnModelRequest();
       this.quick.error = this.errorMessage(error);
     } finally {
       this.quick.sending = false;
@@ -1005,6 +1096,11 @@ struct Index {
     }
     if (!KnowledgeService.isReady()) {
       this.caseChat.error = '本地法律资料尚未就绪，请稍后再试';
+      return;
+    }
+    const quotaError: string = this.takeModelRequest();
+    if (quotaError.length > 0) {
+      this.caseChat.error = quotaError;
       return;
     }
     this.caseMessageController.stopEditing();
@@ -1039,6 +1135,7 @@ struct Index {
         ]);
       }
     } catch (error) {
+      this.returnModelRequest();
       this.caseChat.error = this.errorMessage(error);
     } finally {
       this.caseChat.sending = false;
@@ -1382,6 +1479,9 @@ struct Index {
     this.quickEvents.openSettings = () => {
       this.mineOpen = true;
     };
+    this.quickEvents.lawsOnly = () => {
+      this.answerFromLawsOnly();
+    };
     this.quickEvents.swipeStart = () => {
       this.beginDrawerSwipe();
     };
@@ -1430,6 +1530,9 @@ struct Index {
     };
     this.mineActions.saveShowReasoning = (value: boolean) => {
       this.saveReasoningFlag(SHOW_REASONING_KEY, value);
+    };
+    this.mineActions.setBuiltin = (value: boolean) => {
+      this.setUseBuiltin(value);
     };
     this.mineActions.saveAutoExpand = (value: boolean) => {
       this.saveReasoningFlag(EXPAND_REASONING_KEY, value);
@@ -1550,6 +1653,11 @@ struct Index {
       this.reportRun.error = '本地法律资料尚未就绪，请稍后再试';
       return;
     }
+    const quotaError: string = this.takeModelRequest();
+    if (quotaError.length > 0) {
+      this.reportRun.error = quotaError;
+      return;
+    }
     this.fieldControllers.forEach((controller: TextInputController) => {
       controller.stopEditing();
     });
@@ -1587,6 +1695,7 @@ struct Index {
       this.caseState.reportCitations = knowledge.citations;
       this.reportStage = 4;
     } catch (error) {
+      this.returnModelRequest();
       this.reportRun.error = this.errorMessage(error);
       this.reportStage = 0;
     } finally {
@@ -2679,9 +2788,14 @@ struct Index {
       onCountChange: (count: number) => {
         this.contractReportCount = count;
       },
-      baseUrl: this.env.baseUrl,
-      modelName: this.env.modelName,
-      apiKey: this.env.apiKey,
+      baseUrl: this.env.config().baseUrl,
+      modelName: this.env.config().model,
+      apiKey: this.env.config().apiKey,
+      modelLabel: this.env.usingBuiltin() ? '内置模型' : '你配置的模型',
+      takeModelRequest: (): string => this.takeModelRequest(),
+      returnModelRequest: () => {
+        this.returnModelRequest();
+      },
       defaultCity: this.caseState.location,
       onClose: () => {
       },
@@ -2915,6 +3029,19 @@ struct Index {
   private QuickHome() {
     if (this.quick.messages.length === 0) {
       this.Composer()
+      // Right under the question it is about, where it is seen.
+      if (this.quick.error.length > 0) {
+        ErrorNotice({
+          message: this.quick.error,
+          cx: this.env.cx,
+          onSettings: () => {
+            this.mineOpen = true;
+          },
+          onLawsOnly: () => {
+            this.answerFromLawsOnly();
+          }
+        })
+      }
       Row() {
         Text('常见问题')
           .fontSize(16)
@@ -2939,9 +3066,6 @@ struct Index {
       .rowsGap(10)
       .width('100%')
       this.KnowledgePanel()
-      if (this.quick.error.length > 0) {
-        this.ErrorHint(this.quick.error)
-      }
       this.NoticeCard()
     }
   }

@@ -9,7 +9,9 @@ This repository contains two related clients:
   (HarmonyOS 7, target API 26, compatible API 23).
 
 The HarmonyOS client runs without a project-owned server. It searches a bundled,
-read-only legal index locally and calls a user-configured OpenAI-compatible API.
+read-only legal index locally and calls an OpenAI-compatible API: a built-in
+service shipped with the build (100 requests a day per device), or one the user
+configures in 我的.
 Evidence images are processed on the device with Core Vision Kit and Natural
 Language Kit and never uploaded; only recognized text is sent to the model, and
 only when the user asks.
@@ -47,6 +49,8 @@ only when the user asks.
   - `CitationText.ets`: `[Kn]` citation chips, highlight, and copy text.
   - `ConversationPrompts.ets`, `ConversationText.ets`, `CaseArchive.ets`: prompts,
     history titles and grouping, case archiving; pure logic.
+  - `ModelQuota.ets` (pure) and `ConfigStore.ets`: the built-in service's daily
+    allowance and key encoding, and loading `rawfile/builtin_service.json`.
   - `EvidenceStore.ets`, `EvidencePipeline.ets` (save → super-resolution → OCR →
     index), `EvidenceIndex.ets` (textSearchImage), `EvidenceSearch.ets` (text +
     semantic merge), `EvidenceExtractor.ets` (categories, table rows, dossier
@@ -65,6 +69,8 @@ only when the user asks.
   official texts listed in `supplements.json` without a full rebuild.
 - `tools/harmony/contract-rules/`: contract rule cases, run with Node.
 - `tools/harmony/logic-tests/`: cases for the pure conversation and case logic.
+- `tools/harmony/builtin-service/set.sh`: writes the built-in service file from
+  a key typed at a hidden prompt (`--remove` deletes it).
 - `docs/contest/harmonyos7-release-notes.md`: change log with on-device
   verification records. Add an entry for user-visible changes.
 
@@ -72,6 +78,12 @@ only when the user asks.
 
 - Never commit API keys, signing files, signing passwords, local SDK paths, user
   conversations, attachments, evidence images, or DevEco caches.
+- `harmony-app/entry/src/main/resources/rawfile/builtin_service.json` holds the
+  built-in service's key. It is git-ignored; never commit it, copy it into
+  another path, or print the decoded key. Its encoding only stops casual
+  extraction from the package: use a key made for the app with a small balance
+  and a spending alert. Builds without the file offer only the user's own
+  service.
 - Keep `build-profile.json5` free of machine-specific signing material. Local
   signing may live in a working copy only; check `git diff` before committing.
 - Treat source corpora as read-only inputs; generated indexes belong under the
@@ -88,6 +100,10 @@ only when the user asks.
 - Handle missing configuration, timeouts, HTTP failures, malformed JSON, and
   large attachments without crashing.
 - Do not add a project server unless a task explicitly changes the architecture.
+- Every request to the built-in service goes through `takeModelRequest` (daily
+  allowance and a 2-second gap) and gives it back with `returnModelRequest` when
+  it fails before any answer; requests to the user's own service are not
+  counted.
 - Prefer small changes and run the narrowest relevant checks.
 - Keep pure logic (parsing, ranking, extraction) free of `@kit` imports so it can
   be tested with Node, as `CitationText`, `EvidenceSearch` and

@@ -33,4 +33,4 @@ if ! "$NODE" --experimental-transform-types --no-warnings -e '' >/dev/null 2>&1;
     fi
   done
 fi
-"$NODE" --experimental-transform-types --no-warnings "$WORK/tests/cases.ts"
+ROOT_DIR="$ROOT" "$NODE" --experimental-transform-types --no-warnings "$WORK/tests/cases.ts"

@@ -160,32 +160,73 @@ export interface ErrorParams {
   cx: ThemeColors;
   // Opens 我的; offered only for errors fixed there.
   onSettings: () => void;
+  // When the built-in allowance is used up: answer from the local law index
+  // alone. Offered where that makes sense (普法).
+  onLawsOnly?: () => void;
 }
 
 @Builder
 export function ErrorNotice(p: ErrorParams) {
-  Row() {
-    Text(p.message)
-      .fontSize(12)
-      .lineHeight(18)
-      .fontColor(p.cx.danger)
-      .layoutWeight(1)
-    if (ConversationText.needsModelSettings(p.message)) {
-      Button('去「我的」')
-        .fontSize(11)
-        .fontColor(p.cx.onBrand)
-        .backgroundColor(p.cx.brand)
-        .height(32)
-        .borderRadius(10)
-        .onClick(() => {
-          p.onSettings();
-        })
+  if (ConversationText.isQuotaError(p.message)) {
+    Column({ space: 8 }) {
+      Text(p.message)
+        .fontSize(12)
+        .lineHeight(18)
+        .fontColor(p.cx.warn)
+        .width('100%')
+      Row({ space: 8 }) {
+        Button('去「我的」')
+          .fontSize(11)
+          .fontColor(p.cx.onBrand)
+          .backgroundColor(p.cx.brand)
+          .height(32)
+          .borderRadius(10)
+          .onClick(() => {
+            p.onSettings();
+          })
+        if (p.onLawsOnly !== undefined) {
+          Button('只看法条')
+            .fontSize(11)
+            .fontColor(p.cx.brand)
+            .backgroundColor(p.cx.tint)
+            .height(32)
+            .borderRadius(10)
+            .onClick(() => {
+              p.onLawsOnly!();
+            })
+        }
+      }
+      .width('100%')
     }
+    .width('100%')
+    .padding(10)
+    .backgroundColor(p.cx.surface2)
+    .borderRadius(12)
+    .border({ width: 1, color: p.cx.line })
+  } else {
+    Row() {
+      Text(p.message)
+        .fontSize(12)
+        .lineHeight(18)
+        .fontColor(p.cx.danger)
+        .layoutWeight(1)
+      if (ConversationText.needsModelSettings(p.message)) {
+        Button('去「我的」')
+          .fontSize(11)
+          .fontColor(p.cx.onBrand)
+          .backgroundColor(p.cx.brand)
+          .height(32)
+          .borderRadius(10)
+          .onClick(() => {
+            p.onSettings();
+          })
+      }
+    }
+    .width('100%')
+    .padding(10)
+    .backgroundColor(p.cx.dangerBg)
+    .borderRadius(12)
   }
-  .width('100%')
-  .padding(10)
-  .backgroundColor(p.cx.dangerBg)
-  .borderRadius(12)
 }
 
 function chipBg(env: AppEnv): string {
