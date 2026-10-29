@@ -53,6 +53,7 @@ import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
 import { EvidenceIndex } from '../services/EvidenceIndex';
 import { ContractReport, ContractReviewService } from '../services/ContractReviewService';
 import { EvidenceStore } from '../services/EvidenceStore';
+import { BrandBar } from '../components/BrandBar';
 import { MineActions, MinePage } from '../components/MinePage';
 import { DrawerActions, HistoryDrawer } from '../components/HistoryDrawer';
 import { Conversation, ConversationEvents } from '../components/chat/Conversation';
@@ -134,7 +135,7 @@ struct Index {
   @Watch('onCardScenarioChanged')
   cardScenarioSequence: number = 0;
   @StorageLink('checklistFloatActive') checklistFloatActive: boolean = false;
-  @State currentSection: AppSection = AppSection.QUICK;
+  @State @Watch('syncStatusBar') currentSection: AppSection = AppSection.QUICK;
   @Provide('env') env: AppEnv = new AppEnv();
   @State @Watch('applyReading') quick: ChatSession = new ChatSession();
   @State @Watch('applyReading') caseChat: ChatSession = new ChatSession();
@@ -160,17 +161,25 @@ struct Index {
   @State @Watch('syncActiveCitation') sheetKind: number = 0;
   @State sheetCitations: LawCitation[] = [];
   @State quickHistory: QuickSession[] = [];
-  @State drawer: DrawerState = new DrawerState();
+  // The 卷宗 page has scrolled under the title bar.
+  @State @Watch('syncStatusBar') dossierScrolled: boolean = false;
+  // 合同 and 我的 have scrolled under their title bars.
+  @State @Watch('syncStatusBar') contractScrolled: boolean = false;
+  @State @Watch('syncStatusBar') mineScrolled: boolean = false;
+  @State @Watch('syncStatusBar') drawer: DrawerState = new DrawerState();
+  // Something light is under the status bar: the history drawer, or a title
+  // bar that has turned to glass (普法, 维权). Otherwise it is over blue.
+  private statusOverLight: boolean = false;
   @State detailCitations: LawCitation[] = [];
   @State @Watch('syncActiveCitation') detailIndex: number = 0;
   @State @Watch('syncActiveCitation') detailContent: string = '';
   // The citation the detail sheet shows, so its chip stands out in the answer.
   @Provide('activeCitation') activeCitation: string = '';
   @State evidenceMode: number = EVIDENCE_MODE_LIST;
-  @State rightsTab: number = RIGHTS_CHAT;
+  @State @Watch('syncStatusBar') rightsTab: number = RIGHTS_CHAT;
   // The current 维权 case is caseMessages plus the dossier fields; caseHistory
   // holds the archived ones.
-  @State mineOpen: boolean = false;
+  @State @Watch('mineOpenChanged') mineOpen: boolean = false;
   @State contractMode: number = CONTRACT_MODE_HOME;
   @State contractReportCount: number = 0;
   // Bumped when local records are cleared, so the 合同 section reloads.
@@ -357,15 +366,32 @@ struct Index {
     }
   }
 
+  // 我的 opens at its top.
+  private mineOpenChanged(): void {
+    this.mineScrolled = false;
+    this.syncStatusBar();
+  }
+
+  private syncStatusBar(): void {
+    const light: boolean = this.drawer.open || (this.currentSection === AppSection.QUICK && this.quick.scrolled) ||
+      (this.currentSection === AppSection.CASE && this.rightsScrolled()) ||
+      (this.currentSection === AppSection.CONTRACT && this.contractScrolled) || (this.mineOpen && this.mineScrolled);
+    if (light !== this.statusOverLight) {
+      this.statusOverLight = light;
+      this.applySystemBar();
+    }
+  }
+
   private applySystemBar(): void {
     if (this.mainWindow === undefined) {
       return;
     }
     const contentColor: string = this.env.isDark ? '#EAF0FA' : '#12315E';
     try {
+      // Every section has the blue band under the status bar.
       this.mainWindow.setWindowSystemBarProperties({
         statusBarColor: '#00000000',
-        statusBarContentColor: contentColor,
+        statusBarContentColor: this.statusOverLight ? contentColor : this.env.cx.headerText,
         navigationBarColor: '#00000000',
         navigationBarContentColor: contentColor
       }).catch(() => {
@@ -1277,6 +1303,7 @@ struct Index {
   // A conversation scrolled into reading hides the tab bar, as a contract
   // report does on its own.
   private applyReading(): void {
+    this.syncStatusBar();
     if (this.currentSection === AppSection.CONTRACT) {
       return;
     }
@@ -2504,12 +2531,12 @@ struct Index {
     Text(this.rightsLabel(tab))
       .fontSize(13.5)
       .fontWeight(this.rightsTab === tab ? FontWeight.Bold : FontWeight.Regular)
-      .fontColor(this.rightsTab === tab ? this.env.cx.text : this.env.cx.muted)
+      .fontColor(this.rightsTab === tab ? this.env.cx.headerA : this.env.cx.headerSub)
       .textAlign(TextAlign.Center)
       .layoutWeight(1)
       .height(32)
       .borderRadius(10)
-      .backgroundColor(this.rightsTab === tab ? this.env.cx.surface : Color.Transparent)
+      .backgroundColor(this.rightsTab === tab ? this.env.cx.headerText : Color.Transparent)
       .shadow(this.rightsTab === tab ? { radius: 6, color: this.env.cx.softShadow, offsetY: 1 } :
         { radius: 0, color: Color.Transparent, offsetY: 0 })
       .animation({ duration: this.env.reduceMotion ? 0 : 160, curve: Curve.EaseOut })
@@ -2524,6 +2551,7 @@ struct Index {
   @Builder
   private RightsPage() {
     HdsNavigation() {
+    Stack({ alignContent: Alignment.Top }) {
     Column() {
       // 梳理 and 卷宗 stay alive while hidden, so each keeps its scroll
       // position and the title bar can follow it. 证据 is rebuilt each time:
@@ -2548,7 +2576,12 @@ struct Index {
             scroller: this.dossierScroller,
             actions: this.dossierActions,
             chatActions: this.chatActions,
-            topInset: this.rightsTopInset()
+            topInset: this.rightsTopInset(),
+            onScrolled: (scrolled: boolean) => {
+              if (this.dossierScrolled !== scrolled) {
+                this.dossierScrolled = scrolled;
+              }
+            }
           })
         }
         .width('100%')
@@ -2563,8 +2596,14 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+      this.RightsBrandBar()
+    }
+    .width('100%')
+    .height('100%')
     }
     .titleBar({
+      // Clear with white title and buttons over the blue band at the top;
+      // the system's glass with dark ones once the page scrolls under it.
       style: {
         scrollEffectOpts: {
           enableScrollEffect: true,
@@ -2576,9 +2615,9 @@ struct Index {
         },
         originalStyle: {
           contentStyle: {
-            titleStyle: { mainTitleColor: this.env.cx.text },
-            menuStyle: { iconColor: this.env.cx.brand },
-            backIconStyle: { iconColor: this.env.cx.brand }
+            titleStyle: { mainTitleColor: this.env.cx.headerText },
+            menuStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' },
+            backIconStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' }
           }
         },
         scrollEffectStyle: {
@@ -2590,7 +2629,8 @@ struct Index {
         }
       },
       // The case is the title; its list and a new case on the right; the
-      // page switch under it, folded while reading the conversation.
+      // page switch under it at the top of the page only, as the glass bar
+      // stays one line.
       content: {
         title: { mainTitle: this.currentCaseTitle() },
         backIcon: {
@@ -2604,7 +2644,7 @@ struct Index {
           }
         },
         menu: { value: this.rightsMenu() },
-        bottomBuilder: this.rightsTab === RIGHTS_CHAT && this.caseChat.reading ? undefined : {
+        bottomBuilder: this.rightsScrolled() || (this.rightsTab === RIGHTS_CHAT && this.caseChat.reading) ? undefined : {
           builder: (): void => {
             this.RightsSegments()
           },
@@ -2619,7 +2659,38 @@ struct Index {
     .mode(NavigationMode.Stack)
     // Stays while scrolling; only immersive reading (a tap) hides it.
     .hideTitleBar(this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive, true)
-    .bindToScrollable([this.caseScroller, this.dossierScroller, this.evidenceScroller])
+    // Only the page shown: the bar's glass follows that page's scroll.
+    .bindToScrollable(this.rightsScrollers())
+  }
+
+  @Builder
+  private RightsBrandBar() {
+    BrandBar({
+      cx: this.env.cx,
+      isDark: this.env.isDark,
+      lightLevel: this.env.lightLevel,
+      reduceMotion: this.env.reduceMotion,
+      barHeight: this.statusBarHeight + TITLE_ROW_HEIGHT +
+        (this.rightsTab === RIGHTS_CHAT && this.caseChat.reading ? 0 : RIGHTS_SEGMENT_HEIGHT),
+      // At the top of the page only; scrolled, the system's glass is the bar.
+      shown: !this.rightsScrolled() && !(this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive)
+    })
+  }
+
+  private rightsScrollers(): Scroller[] {
+    if (this.rightsTab === RIGHTS_CHAT) {
+      return [this.caseScroller];
+    }
+    return this.rightsTab === RIGHTS_DOSSIER ? [this.dossierScroller] : [];
+  }
+
+  // The 维权 page has scrolled under its title bar. 证据 starts below the
+  // title bar, so nothing passes under it there and it keeps the blue band.
+  private rightsScrolled(): boolean {
+    if (this.rightsTab === RIGHTS_CHAT) {
+      return this.caseChat.scrolled;
+    }
+    return this.rightsTab === RIGHTS_DOSSIER && this.dossierScrolled;
   }
 
   // The title bar's room over the 维权 pages: status bar, title row and page
@@ -2657,7 +2728,7 @@ struct Index {
       this.RightsSegment(RIGHTS_EVIDENCE)
     }
     .padding(3)
-    .backgroundColor('#66' + this.env.cx.surface2.substring(1))
+    .backgroundColor('#2EFFFFFF')
     .borderRadius(12)
     .margin({ left: 16, right: 16, top: 2, bottom: 6 })
   }
@@ -2676,7 +2747,10 @@ struct Index {
       contractCount: this.contractReportCount,
       busy: this.quick.sending || this.caseChat.sending || this.reportRun.sending,
       actions: this.mineActions,
-      statusBarHeight: this.statusBarHeight
+      statusBarHeight: this.statusBarHeight,
+      onScrolledChange: (scrolled: boolean) => {
+        this.mineScrolled = scrolled;
+      }
     })
   }
 
@@ -2690,6 +2764,9 @@ struct Index {
       statusBarHeight: this.statusBarHeight,
       onImmersiveChange: (immersive: boolean) => {
         this.setStatusBarHidden(immersive && this.currentSection === AppSection.CONTRACT);
+      },
+      onScrolledChange: (scrolled: boolean) => {
+        this.contractScrolled = scrolled;
       },
       mode: $contractMode,
       embedded: true,
@@ -2976,7 +3053,8 @@ struct Index {
           materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
         },
         // Over the blue header the title is hidden (the header shows it large)
-        // and the buttons are white; once the bar turns to glass both darken.
+        // and the buttons are white; once the bar turns to the system's glass
+        // they darken.
         originalStyle: {
           contentStyle: {
             menuStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' },
@@ -3023,7 +3101,9 @@ struct Index {
       placeholder: '继续追问…',
       sendingLabel: '正在检索本地法规并作答…',
       askLabel: '追问',
+      // The tab bar and composer stay while scrolling; a tap hides them.
       tapToHide: true,
+      scrollToRead: false,
       readingRoom: this.readingRoom(false),
       picking: this.isAttachmentPicking,
       drawerSwipe: true,
@@ -3095,7 +3175,9 @@ struct Index {
       placeholder: this.caseChat.messages.length > 0 ? '补充案情或追问…' : '从事情的起因开始说…',
       sendingLabel: '正在梳理案件信息…',
       askLabel: '补充案情',
+      // As in 普法: the tab bar and composer stay while scrolling.
       tapToHide: true,
+      scrollToRead: false,
       topInset: this.rightsTopInset(),
       readingRoom: this.readingRoom(true),
       picking: this.isAttachmentPicking,

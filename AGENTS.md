@@ -37,6 +37,9 @@ only when the user asks.
   action classes (`ChatActions`, `ConversationEvents`, ...).
 - `harmony-app/entry/src/main/ets/components/MinePage.ets`, `HistoryDrawer.ets`,
   `DossierPage.ets`: 我的, the 普法 history drawer, and 维权 · 卷宗.
+- `harmony-app/entry/src/main/ets/components/BrandBar.ets`: the blue band
+  (gradient and scale watermark) behind a title bar at the top of a page, and
+  `SCROLLED_PAST`, how far a page scrolls before its bar turns to glass.
 - `harmony-app/entry/src/main/ets/components/ContractReview.ets`: 合同体检
   (import, facts, report, clause view), embedded as the 合同 section.
 - `harmony-app/entry/src/main/ets/components/EvidenceLibrary.ets`: 证据库
@@ -162,15 +165,26 @@ only when the user asks.
   up white in dark mode. A child with `width('100%')` plus side margins overflows
   the screen; put the side room on the parent as padding.
 - Title bars are HdsNavigation over the content (`ignoreLayoutSafeArea` top,
-  `avoidLayoutSafeArea` on the bar), bound to the page scrollers with
-  `bindToScrollable`. The content runs under the bar: pages without 普法's
-  brand header pad their top by status bar (read from the window) + title row
-  (56) + any bottom area (维权's page switch, the contract filters). The bar
-  only learns the scroll position from scroll events: after replacing the
-  content (back to the home), scroll the bound scroller to the top or the bar
-  stays in its glass look. Its visibility follows the page's immersive state
-  (a tap), never scrolling. ArkTS rejects a ternary between two untyped object
-  literals here; build `backIcon` / `bottomBuilder` options in typed helpers.
+  `avoidLayoutSafeArea` on the bar), bound with `bindToScrollable`. At the top
+  of a page the bar is clear with white title and buttons over blue (普法's
+  header, elsewhere a `BrandBar`); once the page scrolls it turns to the
+  system's glass with dark ones, the band fades, and the status bar text turns
+  dark (`syncStatusBar` in Index). 维权's page switch shows at the top only; the
+  contract filters stay on the glass. The content runs under the bar: pages
+  without 普法's header pad their top by status bar (read from the window) +
+  title row (56) + any bottom area.
+- The bar's glass state is shared by every scroller it is bound to and only
+  changes on scroll events: bind only the scroller of the page shown (维权's
+  tabs, the contract's modes and views) and track `scrolled` per page, or the
+  bar keeps one page's glass on another. After replacing the content (back to
+  the home), scroll the bound scroller to the top. Its visibility follows the
+  page's immersive state (a tap), never scrolling. Do not put a color layer in
+  `stackBuilder`: it covers the bar's buttons. ArkTS rejects a ternary between
+  two untyped object literals here; build `backIcon` / `bottomBuilder` options
+  in typed helpers.
+- 普法 and 维权 · 梳理 keep the tab bar and composer while scrolling
+  (`scrollToRead: false`); only a tap (immersive reading) hides them. The
+  contract report still folds them on scroll.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.

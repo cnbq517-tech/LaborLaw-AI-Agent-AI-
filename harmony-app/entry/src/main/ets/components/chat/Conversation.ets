@@ -2,6 +2,7 @@ import { AppEnv } from '../../models/AppEnv';
 import { ChatMessage, ChatRole } from '../../models/AppModels';
 import { ChatSession } from '../../models/ChatSession';
 import { Material } from '../../theme/Material';
+import { SCROLLED_PAST } from '../BrandBar';
 import {
   AskFab,
   ChatActions,
@@ -71,6 +72,9 @@ export struct Conversation {
   // A tap with every control shown hides them all (immersive reading); where
   // false, a tap only brings hidden controls back.
   @Prop tapToHide: boolean = false;
+  // Scrolling down folds the composer and tab bar away (reading). Where false,
+  // they stay while scrolling, and only a tap hides them.
+  @Prop scrollToRead: boolean = true;
   // Room at the top for a title bar floating over the content.
   @Prop topInset: number = 0;
   @BuilderParam lead: () => void = noLead;
@@ -152,8 +156,8 @@ export struct Conversation {
   // it again. Near the top nothing counts: a fling past the top springs back
   // down, and that rebound would fold the page again just after it unfolded.
   private trackReading(delta: number, state: ScrollState): void {
-    if (state === ScrollState.Idle || !this.conversing || this.chat.reading || this.env.keyboardVisible ||
-      this.scroller.currentOffset().yOffset < READING_DRAG) {
+    if (!this.scrollToRead || state === ScrollState.Idle || !this.conversing || this.chat.reading ||
+      this.env.keyboardVisible || this.scroller.currentOffset().yOffset < READING_DRAG) {
       this.downDrag = 0;
       return;
     }
@@ -244,6 +248,10 @@ export struct Conversation {
       .onDidScroll((xOffset: number, yOffset: number, state: ScrollState) => {
         this.updateJump();
         this.trackReading(yOffset, state);
+        const scrolled: boolean = this.scroller.currentOffset().yOffset > SCROLLED_PAST;
+        if (this.chat.scrolled !== scrolled) {
+          this.chat.scrolled = scrolled;
+        }
         if (state !== ScrollState.Idle) {
           this.lastMoved = Date.now();
         }

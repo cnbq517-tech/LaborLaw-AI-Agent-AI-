@@ -29,6 +29,9 @@ export class ChatSession {
   // Reading with everything hidden, title bar and status bar too: entered by
   // a tap on the conversation, left by another.
   immersive: boolean = false;
+  // Scrolled away from the top: the title bar shows its blue band instead of
+  // the page's own header.
+  scrolled: boolean = false;
 
   canSend(): boolean {
     return (this.input.trim().length > 0 || this.attachment.name.length > 0) && !this.sending;

@@ -3,6 +3,7 @@ import { CaseFieldInfo, LawCitation } from '../models/AppModels';
 import { CaseState } from '../models/CaseState';
 import { ChatSession } from '../models/ChatSession';
 import { ThemeColors } from '../theme/Theme';
+import { SCROLLED_PAST } from './BrandBar';
 import { AnswerActionsView, AnswerText, ChatActions, ChatIcon, ErrorNotice, SendingRow } from './chat/ChatViews';
 
 // 维权 · 卷宗: the six case fields, the floating checklist, and the analysis
@@ -60,6 +61,9 @@ export struct DossierPage {
   @Prop floatError: string = '';
   // Room at the top for the title bar floating over the page.
   @Prop topInset: number = 0;
+  // Whether the page has scrolled under that title bar.
+  onScrolled: (scrolled: boolean) => void = () => {
+  };
   caseFields: CaseFieldInfo[] = [];
   // The page's, so it can end editing before sending the report.
   fieldControllers: TextInputController[] = [];
@@ -374,5 +378,8 @@ export struct DossierPage {
     .width('100%')
     .height('100%')
     .edgeEffect(EdgeEffect.Spring)
+    .onDidScroll(() => {
+      this.onScrolled(this.scroller.currentOffset().yOffset > SCROLLED_PAST);
+    })
   }
 }

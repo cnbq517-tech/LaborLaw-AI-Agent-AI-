@@ -51,6 +51,7 @@ import {
 import { CAT_CONTRACT } from '../services/EvidenceExtractor';
 import { EvidenceStore } from '../services/EvidenceStore';
 import { ThemeColors } from '../theme/Theme';
+import { BrandBar, SCROLLED_PAST } from './BrandBar';
 import { AskFab, READING_FAB_BOTTOM } from './chat/ChatViews';
 import { SCROLL_SETTLE_MS } from './chat/Conversation';
 import { Glass, Material } from '../theme/Material';
@@ -106,6 +107,9 @@ export struct ContractReview {
   // Everything hidden while reading the report (a tap), title bar included.
   @State immersive: boolean = false;
   onImmersiveChange: (immersive: boolean) => void = (immersive: boolean) => {
+  };
+  // Whether the page has scrolled under the title bar (it is then glass).
+  onScrolledChange: (scrolled: boolean) => void = (scrolled: boolean) => {
   };
   @Link @Watch('modeChanged') mode: number;
   // Shown as the 合同 section rather than as a cover: the home page has no
@@ -167,7 +171,7 @@ export struct ContractReview {
   @State showWarnings: boolean = false;
   @State question: string = '';
   // The annotated contract text and its navigation.
-  @State reportView: number = VIEW_TEXT;
+  @State @Watch('trackScrolledSoon') reportView: number = VIEW_TEXT;
   @State docLines: DocLine[] = [];
   @State wholeFindings: number[] = [];
   @State navOrder: number[] = [];
@@ -182,6 +186,9 @@ export struct ContractReview {
   private homeScroller: Scroller = new Scroller();
   private factsScroller: Scroller = new Scroller();
   private reportScroller: Scroller = new Scroller();
+  // The page shown has scrolled under the title bar: the bar is the system's
+  // glass instead of clear over the blue band.
+  @State scrolled: boolean = false;
   private downScroll: number = 0;
   private navScrollUntil: number = 0;
   private lastMoved: number = 0;
@@ -219,6 +226,33 @@ export struct ContractReview {
     if (this.mode !== CONTRACT_MODE_REPORT) {
       this.setFolded(false);
     }
+    this.trackScrolledSoon();
+  }
+
+  // The scroll of the page shown.
+  private activeScroller(): Scroller {
+    if (this.mode === CONTRACT_MODE_HOME) {
+      return this.homeScroller;
+    }
+    if (this.mode === CONTRACT_MODE_FACTS) {
+      return this.factsScroller;
+    }
+    return this.report() !== undefined && this.reportView === VIEW_TEXT ? this.docScroller : this.reportScroller;
+  }
+
+  private trackScrolled(): void {
+    const scrolled: boolean = this.activeScroller().currentOffset().yOffset > SCROLLED_PAST;
+    if (scrolled !== this.scrolled) {
+      this.scrolled = scrolled;
+      this.onScrolledChange(scrolled);
+    }
+  }
+
+  // Once the new page is laid out, with its own scroll position.
+  trackScrolledSoon(): void {
+    setTimeout(() => {
+      this.trackScrolled();
+    }, 50);
   }
 
   private setFolded(folded: boolean): void {
@@ -754,6 +788,9 @@ export struct ContractReview {
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
     .layoutWeight(1)
+    .onDidScroll(() => {
+      this.trackScrolled();
+    })
   }
 
   @Builder
@@ -915,6 +952,9 @@ export struct ContractReview {
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
     .layoutWeight(1)
+    .onDidScroll(() => {
+      this.trackScrolled();
+    })
   }
 
   @Builder
@@ -1057,6 +1097,7 @@ export struct ContractReview {
       .scrollBar(BarState.Off)
       .layoutWeight(1)
       .onDidScroll((xOffset: number, yOffset: number, state: ScrollState) => {
+        this.trackScrolled();
         this.foldAsk(yOffset);
         if (state !== ScrollState.Idle) {
           this.lastMoved = Date.now();
@@ -1274,6 +1315,7 @@ export struct ContractReview {
         this.docViewport = newValue.height as number;
       })
       .onDidScroll((xOffset: number, yOffset: number, state: ScrollState) => {
+        this.trackScrolled();
         this.foldAsk(yOffset);
         if (state !== ScrollState.Idle) {
           this.lastMoved = Date.now();
@@ -1681,31 +1723,43 @@ export struct ContractReview {
       Row() {
         Text('原文')
           .fontSize(11.5)
-          .fontColor(this.reportView === VIEW_TEXT ? this.cx.text : this.cx.muted)
+          .fontColor(this.toggleColor(this.reportView === VIEW_TEXT))
           .fontWeight(this.reportView === VIEW_TEXT ? FontWeight.Bold : FontWeight.Regular)
           .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .backgroundColor(this.reportView === VIEW_TEXT ? this.cx.surface : Color.Transparent)
+          .backgroundColor(this.reportView === VIEW_TEXT ? this.toggleSelected() : Color.Transparent)
           .borderRadius(9)
           .onClick(() => {
             this.reportView = VIEW_TEXT;
           })
         Text('清单')
           .fontSize(11.5)
-          .fontColor(this.reportView === VIEW_LIST ? this.cx.text : this.cx.muted)
+          .fontColor(this.toggleColor(this.reportView === VIEW_LIST))
           .fontWeight(this.reportView === VIEW_LIST ? FontWeight.Bold : FontWeight.Regular)
           .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .backgroundColor(this.reportView === VIEW_LIST ? this.cx.surface : Color.Transparent)
+          .backgroundColor(this.reportView === VIEW_LIST ? this.toggleSelected() : Color.Transparent)
           .borderRadius(9)
           .onClick(() => {
             this.reportView = VIEW_LIST;
           })
       }
       .padding(2)
-      .backgroundColor(this.cx.surface2)
+      .backgroundColor(this.scrolled ? this.cx.surface2 : '#2EFFFFFF')
       .borderRadius(11)
     }
     .width('100%')
     .padding({ left: 14, right: 12, top: 2, bottom: 8 })
+  }
+
+  // 原文 / 清单: white on the blue band, the plain look on the glass.
+  private toggleColor(selected: boolean): string {
+    if (this.scrolled) {
+      return selected ? this.cx.text : this.cx.muted;
+    }
+    return selected ? this.cx.headerA : this.cx.headerSub;
+  }
+
+  private toggleSelected(): string {
+    return this.scrolled ? this.cx.surface : this.cx.headerText;
   }
 
   // The scale on the home, as in the other sections; back elsewhere.
@@ -1729,6 +1783,7 @@ export struct ContractReview {
     return back;
   }
 
+  // The filters stay on the glass too: they drive the report.
   private bottomArea(): BottomBuilderParams | undefined {
     if (this.mode !== CONTRACT_MODE_REPORT) {
       return undefined;
@@ -1742,13 +1797,15 @@ export struct ContractReview {
     return filters;
   }
 
-  // The page under a system title bar, as 普法 and 维权: glass once the
-  // content scrolls under it, the report's filters in its bottom area.
+  // The page under a system title bar over the blue band, as 普法 and 维权,
+  // the report's filters in its bottom area.
   build() {
     HdsNavigation() {
       this.Body()
     }
     .titleBar({
+      // Clear with white title and buttons over the blue band at the top;
+      // the system's glass with dark ones once the page scrolls under it.
       style: {
         scrollEffectOpts: {
           enableScrollEffect: true,
@@ -1760,16 +1817,16 @@ export struct ContractReview {
         },
         originalStyle: {
           contentStyle: {
-            titleStyle: { mainTitleColor: this.cx.text, subTitleColor: this.cx.muted },
-            menuStyle: { iconColor: this.cx.brand },
-            backIconStyle: { iconColor: this.mode === CONTRACT_MODE_HOME ? this.cx.brand : this.cx.gold }
+            titleStyle: { mainTitleColor: this.cx.headerText, subTitleColor: this.cx.headerSub },
+            menuStyle: { iconColor: this.cx.headerText, backgroundColor: '#33FFFFFF' },
+            backIconStyle: { iconColor: this.cx.headerText, backgroundColor: '#33FFFFFF' }
           }
         },
         scrollEffectStyle: {
           contentStyle: {
             titleStyle: { mainTitleColor: this.cx.text, subTitleColor: this.cx.muted },
             menuStyle: { iconColor: this.cx.brand },
-            backIconStyle: { iconColor: this.mode === CONTRACT_MODE_HOME ? this.cx.brand : this.cx.gold }
+            backIconStyle: { iconColor: this.cx.brand }
           }
         }
       },
@@ -1785,7 +1842,8 @@ export struct ContractReview {
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
     .mode(NavigationMode.Stack)
     .hideTitleBar(this.immersive, true)
-    .bindToScrollable([this.homeScroller, this.factsScroller, this.reportScroller, this.docScroller])
+    // Only the page shown: the bar's glass follows that page's scroll.
+    .bindToScrollable([this.activeScroller()])
   }
 
   @Builder
@@ -1895,6 +1953,15 @@ export struct ContractReview {
             this.notice = '';
           })
       }
+      BrandBar({
+        cx: this.cx,
+        isDark: this.isDark,
+        lightLevel: this.lightLevel,
+        reduceMotion: this.reduceMotion,
+        barHeight: this.topInset(),
+        // At the top of the page only; scrolled, the system's glass is the bar.
+        shown: !this.immersive && !this.scrolled
+      })
     }
     .bindSheet(this.sheet !== SHEET_NONE, this.SheetBody(), {
       height: this.sheet === SHEET_PREVIEW ? '70%' : this.sheet === SHEET_FINDING ? '62%' : '60%',

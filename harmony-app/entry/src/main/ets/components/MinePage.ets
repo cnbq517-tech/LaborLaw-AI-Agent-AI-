@@ -1,6 +1,7 @@
 import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { AppEnv } from '../models/AppEnv';
 import { DAILY_LIMIT, ModelQuota } from '../services/ModelQuota';
+import { BrandBar, SCROLLED_PAST } from './BrandBar';
 import { ChatIcon } from './chat/ChatViews';
 import {
   LIGHT_ADAPTIVE,
@@ -56,6 +57,11 @@ export struct MinePage {
   // In vp; the title bar sits below it.
   @Prop statusBarHeight: number = 40;
   private scroller: Scroller = new Scroller();
+  // Scrolled under the title bar: the bar is the system's glass instead of
+  // clear over the blue band.
+  @State scrolled: boolean = false;
+  onScrolledChange: (scrolled: boolean) => void = (scrolled: boolean) => {
+  };
   private baseUrlController: TextInputController = new TextInputController();
   private modelNameController: TextInputController = new TextInputController();
   private apiKeyController: TextInputController = new TextInputController();
@@ -486,23 +492,44 @@ export struct MinePage {
     .width('100%')
     .height('100%')
     .edgeEffect(EdgeEffect.Spring)
+    .onDidScroll(() => {
+      const scrolled: boolean = this.scroller.currentOffset().yOffset > SCROLLED_PAST;
+      if (scrolled !== this.scrolled) {
+        this.scrolled = scrolled;
+        this.onScrolledChange(scrolled);
+      }
+    })
   }
 
   // 我的: settings, opened from the round button beside the tab bar.
   // Under a system title bar like the sections: back, then 我的.
   build() {
     HdsNavigation() {
-      Column() {
-        this.Settings()
+      Stack({ alignContent: Alignment.Top }) {
+        Column() {
+          this.Settings()
+        }
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          angle: 180,
+          colors: [[this.env.cx.bgTop, 0.0], [this.env.cx.bgBottom, 1.0]]
+        })
+        BrandBar({
+          cx: this.env.cx,
+          isDark: this.env.isDark,
+          lightLevel: this.env.lightLevel,
+          reduceMotion: this.env.reduceMotion,
+          barHeight: this.statusBarHeight + TITLE_ROW_HEIGHT,
+          shown: !this.scrolled
+        })
       }
       .width('100%')
       .height('100%')
-      .linearGradient({
-        angle: 180,
-        colors: [[this.env.cx.bgTop, 0.0], [this.env.cx.bgBottom, 1.0]]
-      })
     }
     .titleBar({
+      // Clear with white title and buttons over the blue band at the top;
+      // the system's glass with dark ones once the page scrolls under it.
       style: {
         scrollEffectOpts: {
           enableScrollEffect: true,
@@ -514,14 +541,14 @@ export struct MinePage {
         },
         originalStyle: {
           contentStyle: {
-            titleStyle: { mainTitleColor: this.env.cx.text, subTitleColor: this.env.cx.muted },
-            backIconStyle: { iconColor: this.env.cx.gold }
+            titleStyle: { mainTitleColor: this.env.cx.headerText, subTitleColor: this.env.cx.headerSub },
+            backIconStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' }
           }
         },
         scrollEffectStyle: {
           contentStyle: {
             titleStyle: { mainTitleColor: this.env.cx.text, subTitleColor: this.env.cx.muted },
-            backIconStyle: { iconColor: this.env.cx.gold }
+            backIconStyle: { iconColor: this.env.cx.brand }
           }
         }
       },
