@@ -45,6 +45,8 @@ import { CAT_CONTRACT } from '../services/EvidenceExtractor';
 import { EvidenceStore } from '../services/EvidenceStore';
 import { ThemeColors } from '../theme/Theme';
 import { AskFab, READING_FAB_BOTTOM } from './chat/ChatViews';
+import { SCROLL_SETTLE_MS } from './chat/Conversation';
+import { Material } from '../theme/Material';
 
 export const CONTRACT_MODE_HOME: number = 0;
 export const CONTRACT_MODE_FACTS: number = 1;
@@ -85,6 +87,9 @@ interface ChoiceParams {
 export struct ContractReview {
   @Prop cx: ThemeColors;
   @Prop isDark: boolean = false;
+  // 光感强度 and reduced motion, for the glass of the floating controls.
+  @Prop lightLevel: number = 0;
+  @Prop reduceMotion: boolean = false;
   @Link @Watch('modeChanged') mode: number;
   // Shown as the 合同 section rather than as a cover: the home page has no
   // header of its own, and content leaves room for the floating tab bar.
@@ -159,6 +164,7 @@ export struct ContractReview {
   private docScroller: Scroller = new Scroller();
   private downScroll: number = 0;
   private navScrollUntil: number = 0;
+  private lastMoved: number = 0;
   private askController: TextAreaController = new TextAreaController();
   private handle: StreamHandle | undefined = undefined;
 
@@ -221,7 +227,7 @@ export struct ContractReview {
   }
 
   private toast(message: string): void {
-    this.getUIContext().getPromptAction().showToast({ message: message, duration: 1800 });
+    this.getUIContext().getPromptAction().showToast({ systemMaterial: Material.popup(), message: message, duration: 1800 });
   }
 
   // Back from a clause goes to the report, from the report or facts to home.
@@ -888,6 +894,7 @@ export struct ContractReview {
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
             Toggle({ type: ToggleType.Switch, isOn: this.useAi && this.aiReady() })
+              .systemMaterial(Material.control())
               .enabled(this.aiReady())
               .selectedColor(this.cx.gold)
               .onChange((on: boolean) => {
@@ -1053,12 +1060,18 @@ export struct ContractReview {
         }
         .width('100%')
         .padding({ left: 16, right: 16, bottom: 24 })
+        .onClick(() => {
+          this.revealOnTap();
+        })
       }
       .align(Alignment.Top)
       .scrollBar(BarState.Off)
       .layoutWeight(1)
-      .onDidScroll((xOffset: number, yOffset: number) => {
+      .onDidScroll((xOffset: number, yOffset: number, state: ScrollState) => {
         this.foldAsk(yOffset);
+        if (state !== ScrollState.Idle) {
+          this.lastMoved = Date.now();
+        }
       })
       .onReachStart(() => {
         this.unfoldAtTop();
@@ -1069,6 +1082,14 @@ export struct ContractReview {
   // Folds on a downward scroll. It unfolds only from the 问 AI button or at
   // the top: unfolding on any upward scroll shrinks the text area, which
   // scrolls it and folds it again.
+  // While reading, a tap on the text or list (not on a highlight or card,
+  // which open what they show) brings the composer back, as in 普法 and 维权.
+  private revealOnTap(): void {
+    if (this.askCollapsed && Date.now() - this.lastMoved >= SCROLL_SETTLE_MS) {
+      this.setFolded(false);
+    }
+  }
+
   private foldAsk(delta: number): void {
     // Per-frame deltas of a slow scroll are small, so add them up.
     this.downScroll = delta > 0 ? this.downScroll + delta : 0;
@@ -1206,7 +1227,9 @@ export struct ContractReview {
       this.NavArrow(false)
     }
     .height(40)
-    .backgroundColor(this.cx.surface)
+    .backgroundColor(Material.glass(this.lightLevel, this.reduceMotion).tint(this.cx.surface))
+    .backgroundBlurStyle(Material.glass(this.lightLevel, this.reduceMotion).blur ?
+      BlurStyle.COMPONENT_THICK : BlurStyle.NONE)
     .borderRadius(20)
     .border({ width: 1, color: this.cx.line })
     .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
@@ -1217,20 +1240,24 @@ export struct ContractReview {
   private DocLineView(line: DocLine) {
     Text() {
       ForEach(line.segments, (seg: DocSegment) => {
-        Span(seg.text)
-          .fontColor(this.cx.text)
-          .textBackgroundStyle({ color: this.highlightBg(seg), radius: 3 })
-          .decoration({
-            type: seg.finding >= 0 && this.highlightBg(seg) !== '#00000000' ? TextDecorationType.Underline :
-              TextDecorationType.None,
-            color: this.severityColor(seg.severity),
-            style: seg.severity === SEVERITY_REDLINE ? TextDecorationStyle.SOLID : TextDecorationStyle.DASHED
-          })
-          .onClick(() => {
-            if (seg.finding >= 0) {
+        // Only highlights take taps: a tap on plain text goes to the line, which
+        // brings the composer back while reading.
+        if (seg.finding >= 0) {
+          Span(seg.text)
+            .fontColor(this.cx.text)
+            .textBackgroundStyle({ color: this.highlightBg(seg), radius: 3 })
+            .decoration({
+              type: this.highlightBg(seg) !== '#00000000' ? TextDecorationType.Underline : TextDecorationType.None,
+              color: this.severityColor(seg.severity),
+              style: seg.severity === SEVERITY_REDLINE ? TextDecorationStyle.SOLID : TextDecorationStyle.DASHED
+            })
+            .onClick(() => {
               this.openFinding(seg.finding);
-            }
-          })
+            })
+        } else {
+          Span(seg.text)
+            .fontColor(this.cx.text)
+        }
       }, (seg: DocSegment, i: number) => i.toString() + '_' + seg.finding.toString() + '_' + seg.text.length.toString())
       if (line.clauseFindings.length > 0) {
         Span(`  ⚑ ${line.clauseFindings.length} 处`)
@@ -1242,6 +1269,9 @@ export struct ContractReview {
       }
     }
     .id('docline-' + line.index.toString())
+    .onClick(() => {
+      this.revealOnTap();
+    })
     .fontSize(line.heading ? 15.5 : 15)
     .fontWeight(line.heading ? FontWeight.Bold : FontWeight.Regular)
     .lineHeight(26)
@@ -1299,6 +1329,9 @@ export struct ContractReview {
         }
         .width('100%')
         .padding({ left: 16, right: 22, top: 10, bottom: this.askCollapsed ? 90 : 24 })
+        .onClick(() => {
+          this.revealOnTap();
+        })
       }
       .id(DOC_SCROLL_ID)
       .align(Alignment.Top)
@@ -1308,8 +1341,11 @@ export struct ContractReview {
       .onAreaChange((oldValue: Area, newValue: Area) => {
         this.docViewport = newValue.height as number;
       })
-      .onDidScroll((xOffset: number, yOffset: number) => {
+      .onDidScroll((xOffset: number, yOffset: number, state: ScrollState) => {
         this.foldAsk(yOffset);
+        if (state !== ScrollState.Idle) {
+          this.lastMoved = Date.now();
+        }
       })
       .onReachStart(() => {
         this.unfoldAtTop();
@@ -1735,6 +1771,8 @@ export struct ContractReview {
               AskFab({
                 label: '问 AI',
                 cx: this.cx,
+                isDark: this.isDark,
+                glass: Material.glass(this.lightLevel, this.reduceMotion),
                 onOpen: () => {
                   this.setFolded(false);
                 }
@@ -1763,6 +1801,7 @@ export struct ContractReview {
       dragBar: true,
       showClose: false,
       maskColor: this.isDark ? '#88040B18' : '#66404A5A',
+      systemMaterial: Material.dialog(this.isDark),
       onWillDismiss: () => {
         this.sheet = SHEET_NONE;
       }

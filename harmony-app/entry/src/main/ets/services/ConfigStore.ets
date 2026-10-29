@@ -128,6 +128,21 @@ export class ConfigStore {
     }
   }
 
+  static async loadNumber(context: common.UIAbilityContext, key: string, fallback: number): Promise<number> {
+    try {
+      const store: preferences.Preferences = await preferences.getPreferences(context, PREFERENCES_NAME);
+      return await store.get(key, fallback) as number;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  static async saveNumber(context: common.UIAbilityContext, key: string, value: number): Promise<void> {
+    const store: preferences.Preferences = await preferences.getPreferences(context, PREFERENCES_NAME);
+    await store.put(key, value);
+    await store.flush();
+  }
+
   static async saveFlag(context: common.UIAbilityContext, key: string, value: boolean): Promise<void> {
     const store: preferences.Preferences = await preferences.getPreferences(context, PREFERENCES_NAME);
     await store.put(key, value);

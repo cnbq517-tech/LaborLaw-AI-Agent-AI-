@@ -1,5 +1,4 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { KeyboardAvoidMode, mediaquery, uiMaterial, window } from '@kit.ArkUI';
 import {
   DividerMode,
@@ -7,8 +6,7 @@ import {
   HdsBarStyle,
   HdsTabs,
   HdsTabsController,
-  HdsTabsFloatingStyle,
-  hdsMaterial
+  HdsTabsFloatingStyle
 } from '@kit.UIDesignKit';
 import {
   ApiConfig,
@@ -57,6 +55,7 @@ import { Conversation, ConversationEvents } from '../components/chat/Conversatio
 import { DossierActions, DossierPage, ProgressRing } from '../components/DossierPage';
 import { DrawerState } from '../models/DrawerState';
 import { LIGHT_BUTTON, pointLight } from '../theme/Light';
+import { LIGHT_ADAPTIVE, Material } from '../theme/Material';
 import {
   AnswerActionsView,
   AnswerText,
@@ -124,6 +123,7 @@ class StreamOutcome {
 
 const SHOW_REASONING_KEY: string = 'show_reasoning';
 const USE_BUILTIN_KEY: string = 'use_builtin';
+const LIGHT_LEVEL_KEY: string = 'light_level';
 const EXPAND_REASONING_KEY: string = 'expand_reasoning';
 
 @Entry
@@ -584,7 +584,7 @@ struct Index {
     this.sheetKind = 0;
     this.loadCase(undefined);
     if (hadContent) {
-      this.getUIContext().getPromptAction().showToast({ message: '已存档「' + title + '」', duration: 1800 });
+      this.getUIContext().getPromptAction().showToast({ systemMaterial: Material.popup(), message: '已存档「' + title + '」', duration: 1800 });
     }
   }
 
@@ -602,6 +602,7 @@ struct Index {
 
   private deleteCase(record: CaseRecord): void {
     this.getUIContext().showAlertDialog({
+      systemMaterial: Material.popup(),
       title: '删除这个案件',
       message: '「' + record.title + '」的对话、卷宗和分析报告都会从本机删除，无法恢复。证据库不受影响。',
       autoCancel: true,
@@ -671,6 +672,7 @@ struct Index {
 
   private clearLocalRecords(): void {
     this.getUIContext().showAlertDialog({
+      systemMaterial: Material.popup(),
       title: '清空本机记录',
       message: '将删除普法咨询及其历史记录、全部维权案件（对话、卷宗和分析报告）、证据库和合同审查报告。此操作无法撤销。',
       autoCancel: true,
@@ -714,7 +716,7 @@ struct Index {
             this.contractReportCount = 0;
             this.localDataVersion++;
           }).catch(() => {
-            this.getUIContext().getPromptAction().showToast({ message: '合同审查报告未能删除，请重试', duration: 1800 });
+            this.getUIContext().getPromptAction().showToast({ systemMaterial: Material.popup(), message: '合同审查报告未能删除，请重试', duration: 1800 });
           });
           this.schedulePersist();
         }
@@ -830,6 +832,7 @@ struct Index {
   private async loadReasoningFlags(): Promise<void> {
     this.env.showReasoning = await ConfigStore.loadFlag(this.abilityContext(), SHOW_REASONING_KEY, true);
     this.env.autoExpandReasoning = await ConfigStore.loadFlag(this.abilityContext(), EXPAND_REASONING_KEY, true);
+    this.env.lightLevel = await ConfigStore.loadNumber(this.abilityContext(), LIGHT_LEVEL_KEY, LIGHT_ADAPTIVE);
   }
 
   private saveReasoningFlag(key: string, value: boolean): void {
@@ -1353,6 +1356,7 @@ struct Index {
     this.updateProgress();
     this.schedulePersist();
     this.getUIContext().getPromptAction().showToast({
+      systemMaterial: Material.popup(),
       message: '已填入卷宗：' + labels[field], duration: 1500
     });
   }
@@ -1448,6 +1452,7 @@ struct Index {
     this.chatActions.selecting = (active: boolean) => {
       this.textSelecting = active;
     };
+    this.chatActions.isSelecting = (): boolean => this.textSelecting;
     this.chatActions.send = (forCase: boolean) => {
       if (forCase) {
         this.sendCaseMessage();
@@ -1533,6 +1538,12 @@ struct Index {
     };
     this.mineActions.setBuiltin = (value: boolean) => {
       this.setUseBuiltin(value);
+    };
+    this.mineActions.setLightLevel = (level: number) => {
+      this.env.lightLevel = level;
+      ConfigStore.saveNumber(this.abilityContext(), LIGHT_LEVEL_KEY, level).catch(() => {
+        // The level still applies for this session.
+      });
     };
     this.mineActions.saveAutoExpand = (value: boolean) => {
       this.saveReasoningFlag(EXPAND_REASONING_KEY, value);
@@ -1630,14 +1641,7 @@ struct Index {
   }
 
   private sheetMaterial(): uiMaterial.Material | undefined {
-    if (deviceInfo.sdkApiVersion < 26) {
-      return undefined;
-    }
-    return new uiMaterial.ImmersiveMaterial({
-      style: uiMaterial.ImmersiveStyle.THICK,
-      materialColor: this.env.isDark ? '#66172940' : '#88EAF0F8',
-      applyShadow: true
-    });
+    return Material.dialog(this.env.isDark);
   }
 
   private async generateReport(): Promise<void> {
@@ -1842,18 +1846,23 @@ struct Index {
       },
       barSideMargin: 20,
       barBottomMargin: 30,
+      // No mask behind the bar: content scrolling under it shows through its
+      // glass (沉浸光感). A background-colored mask here hides the material.
       gradientMask: {
         maskColor: t.bgBottom,
-        maskHeight: 132
+        maskHeight: 0
       },
-      adaptToHandedness: false,
+      // On wide devices the bar follows the hand holding it.
+      adaptToHandedness: true,
       lightColor: t.glow,
       systemMaterialEffect: {
-        materialType: hdsMaterial.MaterialType.ADAPTIVE,
-        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        materialType: Material.hdsType(),
+        materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
       },
       thermoCtrl: true,
-      barOpacity: this.env.isDark ? 0.55 : 0.92,
+      // Set even at its default: the keyboard style hides the bar with 0, and
+      // a field left out keeps its last value when the style switches back.
+      barOpacity: 1,
       miniBar: {
         miniBarBuilder: (): void => {
           this.MineButton()
@@ -1899,8 +1908,8 @@ struct Index {
       adaptToHandedness: false,
       lightColor: t.glow,
       systemMaterialEffect: {
-        materialType: hdsMaterial.MaterialType.ADAPTIVE,
-        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        materialType: Material.hdsType(),
+        materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
       },
       thermoCtrl: true,
       barOpacity: 0
@@ -2778,6 +2787,8 @@ struct Index {
     ContractReview({
       cx: this.env.cx,
       isDark: this.env.isDark,
+      lightLevel: this.env.lightLevel,
+      reduceMotion: this.env.reduceMotion,
       mode: $contractMode,
       embedded: true,
       bottomInset: this.env.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,

@@ -68,10 +68,13 @@ export class ChatCompletionRequest {
   model: string;
   messages: RequestChatMessage[] = [];
   stream: boolean = false;
+  // Left out of the JSON when undefined, so the service's default applies.
+  temperature?: number = undefined;
 
-  constructor(model: string, messages: ChatMessage[], stream: boolean = false) {
+  constructor(model: string, messages: ChatMessage[], stream: boolean = false, temperature?: number) {
     this.model = model;
     this.stream = stream;
+    this.temperature = temperature;
     messages.forEach((message: ChatMessage) => {
       this.messages.push(new RequestChatMessage(message.role, message.apiContent));
     });

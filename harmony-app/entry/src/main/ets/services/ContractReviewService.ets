@@ -23,6 +23,7 @@ import { AiApiClient, StreamHandle, StreamResult } from './AiApiClient';
 import { AttachmentService } from './AttachmentService';
 import { EvidencePipeline } from './EvidencePipeline';
 import { KnowledgeService } from './KnowledgeService';
+import { TASK_STRUCTURED } from './ModelTuning';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'ContractReview';
@@ -294,7 +295,7 @@ export class ContractReviewService {
     try {
       // Streaming keeps slow reasoning models from hitting the read timeout.
       const result: StreamResult = await AiApiClient.stream(config, messages, () => {
-      }, handle);
+      }, handle, TASK_STRUCTURED);
       const parsed: ParsedBatch = ContractAi.parse(result.answer, ids, laws);
       parsed.reasoning = result.reasoning;
       return parsed;

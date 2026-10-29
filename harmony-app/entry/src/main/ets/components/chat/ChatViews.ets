@@ -7,6 +7,8 @@ import { AnswerSegment, CitationText } from '../../services/CitationText';
 import { ConversationText } from '../../services/ConversationText';
 import { EvidenceExtractor } from '../../services/EvidenceExtractor';
 import { ThemeColors } from '../../theme/Theme';
+import { Glass, Material } from '../../theme/Material';
+import { LIGHT_BUTTON, pointLight } from '../../theme/Light';
 
 // The conversation pieces 普法 and 维权 share: answers with citation chips and
 // copy actions, the model's reasoning, the answer streaming in, and the
@@ -34,6 +36,12 @@ export class ChatActions {
   };
   // Text selection in an answer pauses the history drawer's swipe.
   selecting: (active: boolean) => void = (active: boolean) => {
+  };
+  // Whether text is selected now: a tap then only clears the selection.
+  isSelecting: () => boolean = () => false;
+  // A tap on message text (not on a citation chip). Selectable text keeps
+  // taps for itself, so the conversation hears of them through this.
+  tapped: () => void = () => {
   };
   send: (forCase: boolean) => void = (forCase: boolean) => {
   };
@@ -251,12 +259,12 @@ function copyAnswer(ui: UIContext, content: string, citations: LawCitation[], wi
   try {
     const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
     pasteboard.getSystemPasteboard().setData(data).then(() => {
-      ui.getPromptAction().showToast({ message: message, duration: 1500 });
+      ui.getPromptAction().showToast({ systemMaterial: Material.popup(), message: message, duration: 1500 });
     }).catch(() => {
-      ui.getPromptAction().showToast({ message: '复制失败，请重试', duration: 1500 });
+      ui.getPromptAction().showToast({ systemMaterial: Material.popup(), message: '复制失败，请重试', duration: 1500 });
     });
   } catch (error) {
-    ui.getPromptAction().showToast({ message: '复制失败，请重试', duration: 1500 });
+    ui.getPromptAction().showToast({ systemMaterial: Material.popup(), message: '复制失败，请重试', duration: 1500 });
   }
 }
 
@@ -334,6 +342,9 @@ export struct AnswerText {
     .editMenuOptions(this.menu())
     .onTextSelectionChange((start: number, end: number) => {
       this.actions.selecting(start !== end);
+    })
+    .onClick(() => {
+      this.actions.tapped();
     })
   }
 }
@@ -527,6 +538,9 @@ export struct MessageView {
             .selectedBackgroundColor(this.env.isDark ? '#4D08111F' : '#59FFFFFF')
             .onTextSelectionChange((start: number, end: number) => {
               this.actions.selecting(start !== end);
+            })
+            .onClick(() => {
+              this.actions.tapped();
             })
             .padding({ left: 14, right: 14, top: 11, bottom: 11 })
             .backgroundColor(this.env.cx.brand)
@@ -734,8 +748,16 @@ export struct PinnedComposer {
           .margin({ top: 5 })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: this.env.keyboardVisible ? 8 : TAB_BAR_CLEARANCE })
+      .padding({ left: 16, right: 16, bottom: this.env.keyboardVisible ? 8 : 6 })
       .backgroundColor(this.env.cx.bgBottom)
+      // The room for the floating tab bar stays see-through, so the text
+      // scrolling behind shows through its glass.
+      if (!this.env.keyboardVisible) {
+        Column()
+          .width('100%')
+          .height(TAB_BAR_CLEARANCE - 6)
+          .hitTestBehavior(HitTestMode.Transparent)
+      }
     }
     .width('100%')
     .onAreaChange((oldValue: Area, newValue: Area) => {
@@ -747,6 +769,8 @@ export struct PinnedComposer {
 export interface AskFabParams {
   label: string;
   cx: ThemeColors;
+  isDark: boolean;
+  glass: Glass;
   onOpen: () => void;
 }
 
@@ -758,7 +782,10 @@ export function AskFab(p: AskFabParams) {
     .fontColor(p.cx.onGold)
     .height(FAB_HEIGHT)
     .padding({ left: 15, right: 15 })
+    // Solid gold, unlike the glass controls: frosted over the text the gold
+    // turns pale and its label hard to read. It keeps the pressed light.
     .backgroundColor(p.cx.gold)
+    .visualEffect(p.glass.light ? pointLight(LIGHT_BUTTON, p.isDark, p.cx) : undefined)
     .borderRadius(FAB_HEIGHT / 2)
     .shadow({ radius: 10, color: p.cx.softShadow, offsetY: 3 })
     .margin({ right: 18, bottom: READING_FAB_BOTTOM })
@@ -781,7 +808,11 @@ export struct JumpButton {
     }
     .width(38)
     .height(38)
-    .backgroundColor(this.env.cx.surface)
+    .backgroundColor(Material.glass(this.env.lightLevel, this.env.reduceMotion).tint(this.env.cx.surface))
+    .backgroundBlurStyle(Material.glass(this.env.lightLevel, this.env.reduceMotion).blur ?
+      BlurStyle.COMPONENT_THICK : BlurStyle.NONE)
+    .visualEffect(Material.glass(this.env.lightLevel, this.env.reduceMotion).light ?
+      pointLight(LIGHT_BUTTON, this.env.isDark, this.env.cx) : undefined)
     .border({ width: 1, color: this.env.cx.line })
     .shadow({ radius: 10, color: this.env.cx.softShadow, offsetY: 3 })
     .accessibilityText('回到最新')

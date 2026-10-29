@@ -1,6 +1,7 @@
 import { AppEnv } from '../../models/AppEnv';
 import { ChatMessage, ChatRole } from '../../models/AppModels';
 import { ChatSession } from '../../models/ChatSession';
+import { Material } from '../../theme/Material';
 import {
   AskFab,
   ChatActions,
@@ -26,6 +27,8 @@ const JUMP_BUTTON_DISTANCE: number = 240;
 const READING_BOTTOM: number = READING_FAB_BOTTOM + 54;
 // A downward drag this long starts reading.
 const READING_DRAG: number = 24;
+// A tap this soon after the list moved stops a fling rather than reveals.
+export const SCROLL_SETTLE_MS: number = 200;
 
 // What the conversation tells the page beyond ChatActions.
 export class ConversationEvents {
@@ -76,6 +79,27 @@ export struct Conversation {
   actions: ChatActions = new ChatActions();
   events: ConversationEvents = new ConversationEvents();
   private downDrag: number = 0;
+  // actions with taps on message text routed to this conversation; the page's
+  // actions are shared by 普法 and 维权.
+  private chatActions: ChatActions = new ChatActions();
+  private lastMoved: number = 0;
+
+  aboutToAppear(): void {
+    const shared: ChatActions = this.actions;
+    const own: ChatActions = new ChatActions();
+    own.openCitation = shared.openCitation;
+    own.openCitations = shared.openCitations;
+    own.openChecklist = shared.openChecklist;
+    own.selecting = shared.selecting;
+    own.isSelecting = shared.isSelecting;
+    own.send = shared.send;
+    own.stop = shared.stop;
+    own.attach = shared.attach;
+    own.tapped = () => {
+      this.revealOnTap();
+    };
+    this.chatActions = own;
+  }
 
   // Index of the latest user message; that turn is laid out separately so it
   // can fill the viewport.
@@ -136,11 +160,20 @@ export struct Conversation {
     }
   }
 
+  // While reading, a tap on the conversation (not on a chip, button or
+  // selected text, which handle their own taps) brings the controls back.
+  private revealOnTap(): void {
+    if (!this.chat.reading || this.actions.isSelecting() || Date.now() - this.lastMoved < SCROLL_SETTLE_MS) {
+      return;
+    }
+    this.setReading(false);
+  }
+
   @Builder
   private Turn() {
     if (this.chat.sending) {
       if (this.chat.streaming.length > 0 || (this.env.showReasoning && this.chat.reasoning.length > 0)) {
-        StreamingView({ chat: this.chat, actions: this.actions })
+        StreamingView({ chat: this.chat, actions: this.chatActions })
       } else {
         SendingRow({ label: this.sendingLabel, cx: this.env.cx })
       }
@@ -165,11 +198,11 @@ export struct Conversation {
           if (this.conversing) {
             Column({ space: 10 }) {
               ForEach(this.chat.messages.slice(0, this.turnStart()), (message: ChatMessage) => {
-                MessageView({ message: message, actions: this.actions })
+                MessageView({ message: message, actions: this.chatActions })
               })
               Column({ space: 10 }) {
                 ForEach(this.chat.messages.slice(this.turnStart()), (message: ChatMessage) => {
-                  MessageView({ message: message, actions: this.actions })
+                  MessageView({ message: message, actions: this.chatActions })
                 })
                 this.Turn()
               }
@@ -187,6 +220,9 @@ export struct Conversation {
           this.chat.contentHeight = newValue.height as number;
           this.updateJump();
         })
+        .onClick(() => {
+          this.revealOnTap();
+        })
       }
       .id(this.scrollId)
       .align(Alignment.Top)
@@ -201,6 +237,9 @@ export struct Conversation {
         this.events.scrolled(this.scroller);
         this.updateJump();
         this.trackReading(yOffset, state);
+        if (state !== ScrollState.Idle) {
+          this.lastMoved = Date.now();
+        }
       })
       .onReachStart(() => {
         this.setReading(false);
@@ -227,6 +266,8 @@ export struct Conversation {
         AskFab({
           label: this.askLabel,
           cx: this.env.cx,
+          isDark: this.env.isDark,
+          glass: Material.glass(this.env.lightLevel, this.env.reduceMotion),
           onOpen: () => {
             this.setReading(false);
           }
@@ -238,7 +279,7 @@ export struct Conversation {
           placeholder: this.placeholder,
           picking: this.picking,
           controller: this.controller,
-          actions: this.actions
+          actions: this.chatActions
         })
       }
       if (this.conversing && this.chat.showJump) {

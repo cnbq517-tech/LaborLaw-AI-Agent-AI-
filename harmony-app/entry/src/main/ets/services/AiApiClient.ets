@@ -11,6 +11,7 @@ import {
   ChatMessage
 } from '../models/AppModels';
 import { ThinkTagParser } from './ThinkTagParser';
+import { ModelTuning, TASK_ANSWER } from './ModelTuning';
 
 const MAX_RAW_BODY: number = 65536;
 
@@ -171,7 +172,8 @@ export class AiApiClient {
     config: ApiConfig,
     messages: ChatMessage[],
     onText: (answer: string, reasoning: string) => void,
-    handle: StreamHandle
+    handle: StreamHandle,
+    task: number = TASK_ANSWER
   ): Promise<StreamResult> {
     const validationError: string = AiApiClient.validateConfig(config);
     if (validationError.length > 0) {
@@ -183,7 +185,8 @@ export class AiApiClient {
     }
     const request: http.HttpRequest = http.createHttp();
     handle.attach(request);
-    const body: ChatCompletionRequest = new ChatCompletionRequest(config.model.trim(), messages, true);
+    const body: ChatCompletionRequest = new ChatCompletionRequest(config.model.trim(), messages, true,
+      ModelTuning.temperature(config.baseUrl, task));
     const headers: RequestHeaders = new RequestHeaders(config.apiKey.trim());
     const decoder: util.TextDecoder = new util.TextDecoder('utf-8');
     const state: StreamState = new StreamState();

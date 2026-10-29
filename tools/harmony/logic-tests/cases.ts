@@ -8,6 +8,8 @@ import { CaseArchive } from '../services/CaseArchive.ts';
 import { ConversationPrompts } from '../services/ConversationPrompts.ts';
 import { CONFIG_HINT, ConversationText, QUOTA_ERROR } from '../services/ConversationText.ts';
 import { DAILY_LIMIT, KEY_MASK, ModelQuota } from '../services/ModelQuota.ts';
+import { ModelTuning, TASK_ANSWER, TASK_STRUCTURED } from '../services/ModelTuning.ts';
+import { ChatCompletionRequest } from '../models/AppModels.ts';
 import { readFileSync } from 'node:fs';
 
 let failed: number = 0;
@@ -117,6 +119,14 @@ lawChunk.text = '劳动合同期限一年以上不满三年的，试用期不得
 const lawsOnly: string = ConversationText.lawsOnlyAnswer([new LawCitation('K1', lawChunk)]);
 check('只看法条：列出条文并带依据编号', lawsOnly.includes('劳动合同法 · 第十九条 [K1]') && lawsOnly.includes('未经模型分析'), lawsOnly);
 check('只看法条：没有结果时给出提示', ConversationText.lawsOnlyAnswer([]).includes('没有找到'));
+
+// Sampling settings.
+check('DeepSeek 不传 temperature（思考模式下不生效）', ModelTuning.temperature('https://api.deepseek.com', TASK_ANSWER) === undefined &&
+  ModelTuning.temperature('https://API.DeepSeek.com/v1', TASK_STRUCTURED) === undefined);
+check('其他服务：问答 0.3，合同审查 0.1', ModelTuning.temperature('https://api.openai.com/v1', TASK_ANSWER) === 0.3 &&
+  ModelTuning.temperature('https://dashscope.aliyuncs.com/compatible-mode/v1', TASK_STRUCTURED) === 0.1);
+check('请求 JSON：不设时不出现 temperature 字段', !JSON.stringify(new ChatCompletionRequest('m', [], true)).includes('temperature') &&
+  JSON.stringify(new ChatCompletionRequest('m', [], true, 0.1)).includes('"temperature":0.1'));
 
 // 维权 cases.
 check('卷宗：第几项已填', CaseArchive.fieldFilled(dossier({ salary: ' 8500 ' }), 2) &&

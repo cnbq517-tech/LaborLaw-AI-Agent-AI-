@@ -1,6 +1,14 @@
 import { AppEnv } from '../models/AppEnv';
 import { DAILY_LIMIT, ModelQuota } from '../services/ModelQuota';
 import { ChatIcon } from './chat/ChatViews';
+import {
+  LIGHT_ADAPTIVE,
+  LIGHT_BALANCED,
+  LIGHT_LABELS,
+  LIGHT_SOFT,
+  LIGHT_STRONG,
+  Material
+} from '../theme/Material';
 
 // 我的, opened from the round button beside the tab bar: the model service,
 // the local law index, what this phone keeps, reasoning display and
@@ -22,6 +30,8 @@ export class MineActions {
   saveAutoExpand: (value: boolean) => void = (value: boolean) => {
   };
   setBuiltin: (value: boolean) => void = (value: boolean) => {
+  };
+  setLightLevel: (level: number) => void = (level: number) => {
   };
 }
 
@@ -149,6 +159,23 @@ export struct MinePage {
       .backgroundColor(this.env.themeMode === mode ? this.env.cx.brand : Color.Transparent)
       .onClick(() => {
         this.actions.setTheme(mode);
+      })
+  }
+
+  @Builder
+  private LightSeg(level: number) {
+    Text(LIGHT_LABELS[level])
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.env.lightLevel === level ? this.env.cx.onBrand : this.env.cx.muted)
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
+      .height(34)
+      .borderRadius(9)
+      .backgroundColor(this.env.lightLevel === level ? this.env.cx.brand : Color.Transparent)
+      .accessibilityText('光感强度' + LIGHT_LABELS[level])
+      .onClick(() => {
+        this.actions.setLightLevel(level);
       })
   }
 
@@ -325,6 +352,7 @@ export struct MinePage {
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
             Toggle({ type: ToggleType.Switch, isOn: this.env.showReasoning })
+              .systemMaterial(Material.control())
               .selectedColor(this.env.cx.brand)
               .onChange((value: boolean) => {
                 this.env.showReasoning = value;
@@ -344,6 +372,7 @@ export struct MinePage {
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
             Toggle({ type: ToggleType.Switch, isOn: this.env.autoExpandReasoning })
+              .systemMaterial(Material.control())
               .selectedColor(this.env.cx.brand)
               .enabled(this.env.showReasoning)
               .onChange((value: boolean) => {
@@ -376,6 +405,28 @@ export struct MinePage {
           .padding(3)
           .backgroundColor(this.env.cx.surface2)
           .borderRadius(12)
+          // HarmonyOS 7 沉浸光感; hidden where the device has no such material.
+          if (Material.supported()) {
+            Text('光感强度')
+              .fontSize(14)
+              .fontColor(this.env.cx.text)
+              .margin({ top: 4 })
+            Row() {
+              this.LightSeg(LIGHT_ADAPTIVE)
+              this.LightSeg(LIGHT_STRONG)
+              this.LightSeg(LIGHT_BALANCED)
+              this.LightSeg(LIGHT_SOFT)
+            }
+            .width('100%')
+            .padding(3)
+            .backgroundColor(this.env.cx.surface2)
+            .borderRadius(12)
+            Text('自适应由系统按设备性能选择；强更通透，也更耗电。作用于底部页签和悬浮按钮。')
+              .fontSize(11)
+              .lineHeight(16)
+              .fontColor(this.env.cx.muted)
+              .width('100%')
+          }
           Row() {
             Column({ space: 3 }) {
               Text('减少动态效果')
@@ -388,6 +439,7 @@ export struct MinePage {
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
             Toggle({ type: ToggleType.Switch, isOn: this.env.reduceMotion })
+              .systemMaterial(Material.control())
               .selectedColor(this.env.cx.brand)
               .onChange((value: boolean) => {
                 this.env.reduceMotion = value;

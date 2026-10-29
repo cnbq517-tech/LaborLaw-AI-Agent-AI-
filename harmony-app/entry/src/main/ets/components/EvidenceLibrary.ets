@@ -26,6 +26,7 @@ import { CAT_CHAT, CAT_OTHER, EVIDENCE_CATEGORIES, EvidenceExtractor } from '../
 import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
 import { EvidenceStore } from '../services/EvidenceStore';
 import { ThemeColors } from '../theme/Theme';
+import { Material } from '../theme/Material';
 
 export const EVIDENCE_MODE_LIST: number = 0;
 export const EVIDENCE_MODE_DETAIL: number = 1;
@@ -286,6 +287,7 @@ export struct EvidenceLibrary {
   private confirmFill(field: ExtractedField): void {
     if (this.fillState(field) === 2) {
       this.getUIContext().showAlertDialog({
+        systemMaterial: Material.popup(),
         title: '替换卷宗里的' + FIELD_LABELS[field.field],
         message: '当前：' + this.currentValue(field.field) + '\n替换为：' + field.value + '\n来源：' + field.source,
         autoCancel: true,
@@ -430,6 +432,7 @@ export struct EvidenceLibrary {
 
   private confirmDelete(item: EvidenceItem): void {
     this.getUIContext().showAlertDialog({
+      systemMaterial: Material.popup(),
       title: '删除这份材料',
       message: '图片和识别出的文字都会从本机删除，无法恢复。',
       autoCancel: true,
@@ -1487,6 +1490,7 @@ export struct EvidenceLibrary {
       dragBar: true,
       showClose: false,
       maskColor: this.isDark ? '#88040B18' : '#66404A5A',
+      systemMaterial: Material.dialog(this.isDark),
       onWillDismiss: () => {
         this.importSheet = false;
       }

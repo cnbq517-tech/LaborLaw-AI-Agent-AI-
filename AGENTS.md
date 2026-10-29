@@ -51,6 +51,13 @@ only when the user asks.
     history titles and grouping, case archiving; pure logic.
   - `ModelQuota.ets` (pure) and `ConfigStore.ets`: the built-in service's daily
     allowance and key encoding, and loading `rawfile/builtin_service.json`.
+  - `ModelTuning.ets` (pure): sampling per request kind. DeepSeek requests carry
+    no temperature (its thinking mode ignores it, and the app keeps thinking on
+    to show reasoning); other services get 0.3 for answers, 0.1 for JSON.
+- `harmony-app/entry/src/main/ets/theme/Material.ets`: 沉浸光感 in one place —
+  support check (API 26 and the device), the material for sheets, dialogs,
+  toasts and toggles, the HdsTabs level from 我的 → 光感强度, and the glass look
+  for floating controls in the content area. `Light.ets` is the point light.
   - `EvidenceStore.ets`, `EvidencePipeline.ets` (save → super-resolution → OCR →
     index), `EvidenceIndex.ets` (textSearchImage), `EvidenceSearch.ets` (text +
     semantic merge), `EvidenceExtractor.ets` (categories, table rows, dossier
@@ -142,6 +149,25 @@ only when the user asks.
   child component did nothing on the test device.
 - After a page or cover transition the first injected tap is often lost; tap
   again before concluding that a control does not work.
+- The system material (`systemMaterial`) only takes effect on the Navigation
+  title bar, a bottom TabBar, dialogs and sheets, toasts, Slider and Toggle; on
+  any other component it renders transparent. The level is settable only for
+  HDS components (`systemMaterialEffect.materialLevel`); for the rest the
+  system picks it. Behind a floating HdsTabs bar, `gradientMask` and an opaque
+  strip under the composer hide the glass entirely.
+- HdsTabs floating style fields keep their last value when left out of a new
+  style: the keyboard style sets `barOpacity: 0`, so the normal style must set
+  `barOpacity: 1` or the bar stays invisible after the keyboard closes.
+- `Text` with `copyOption` keeps taps for itself (its parent's `onClick` does
+  not fire), and a `Span` with `onClick` takes taps for the line around it.
+  Give only tappable spans a handler, and route taps on selectable text through
+  an explicit callback (`ChatActions.tapped`).
+- AppGallery can block a debug-signed app on the device (`DisposedRule`, 「应用已
+  过期」) while its certificate and profile are valid. A new signature needs an
+  uninstall, which clears the app's data; back it up first with
+  `hdc file recv -b com.laborlaw.aiassistant /data/storage/el2/base <dir>` (and
+  `/data/storage/el2/database`) and send it back with `hdc file send -b` before
+  the first launch. The Asset Store API key cannot be copied this way.
 - Anything that changes a scroll area's size while it scrolls can feed back
   into the scroll. The header collapses by 88vp and the reading mode hides the
   composer, tab bar and 维权 bars; a page only a little taller than its viewport

@@ -20,6 +20,8 @@ export class AppEnv {
   builtin: ApiConfig | undefined = undefined;
   useBuiltin: boolean = false;
   quotaUsed: number = 0;
+  // 光感强度, one of LIGHT_* in theme/Material.
+  lightLevel: number = 0;
   showReasoning: boolean = true;
   autoExpandReasoning: boolean = true;
 
