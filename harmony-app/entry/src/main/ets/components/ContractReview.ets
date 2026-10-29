@@ -46,7 +46,8 @@ import { EvidenceStore } from '../services/EvidenceStore';
 import { ThemeColors } from '../theme/Theme';
 import { AskFab, READING_FAB_BOTTOM } from './chat/ChatViews';
 import { SCROLL_SETTLE_MS } from './chat/Conversation';
-import { Material } from '../theme/Material';
+import { Glass, Material } from '../theme/Material';
+import { LIGHT_PANEL, pointLight } from '../theme/Light';
 
 export const CONTRACT_MODE_HOME: number = 0;
 export const CONTRACT_MODE_FACTS: number = 1;
@@ -165,6 +166,8 @@ export struct ContractReview {
   private downScroll: number = 0;
   private navScrollUntil: number = 0;
   private lastMoved: number = 0;
+  // The floating composer's height, kept clear at the end of the text.
+  @State askHeight: number = 0;
   private askController: TextAreaController = new TextAreaController();
   private handle: StreamHandle | undefined = undefined;
 
@@ -1059,7 +1062,7 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%')
         }
         .width('100%')
-        .padding({ left: 16, right: 16, bottom: 24 })
+        .padding({ left: 16, right: 16, bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
         .onClick(() => {
           this.revealOnTap();
         })
@@ -1229,7 +1232,7 @@ export struct ContractReview {
     .height(40)
     .backgroundColor(Material.glass(this.lightLevel, this.reduceMotion).tint(this.cx.surface))
     .backgroundBlurStyle(Material.glass(this.lightLevel, this.reduceMotion).blur ?
-      BlurStyle.COMPONENT_THICK : BlurStyle.NONE)
+      BlurStyle.COMPONENT_THICK : BlurStyle.NONE, Material.blurOptions(this.isDark))
     .borderRadius(20)
     .border({ width: 1, color: this.cx.line })
     .shadow({ radius: 10, color: this.cx.softShadow, offsetY: 3 })
@@ -1328,7 +1331,7 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%').margin({ top: 16 })
         }
         .width('100%')
-        .padding({ left: 16, right: 22, top: 10, bottom: this.askCollapsed ? 90 : 24 })
+        .padding({ left: 16, right: 22, top: 10, bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
         .onClick(() => {
           this.revealOnTap();
         })
@@ -1389,12 +1392,8 @@ export struct ContractReview {
   // the clause (or the whole report) attached.
   @Builder
   private PinnedAsk() {
+    // A glass capsule over the text, as in 普法 and 维权.
     Column() {
-      Column()
-        .width('100%')
-        .height(22)
-        .linearGradient({ angle: 180, colors: [['#00' + this.cx.bgBottom.substring(1), 0.0], [this.cx.bgBottom, 1.0]] })
-        .hitTestBehavior(HitTestMode.Transparent)
       Column() {
         Row({ space: 6 }) {
           TextArea({
@@ -1428,23 +1427,34 @@ export struct ContractReview {
         }
         .width('100%')
         .alignItems(VerticalAlign.Bottom)
-        .padding(4)
-        .backgroundColor(this.cx.surface)
-        .borderRadius(24)
-        .border({ width: 1, color: this.cx.line })
-        .shadow({ radius: 14, color: this.cx.softShadow, offsetY: 4 })
         Text('发送后在「维权」中继续 · AI 内容仅供参考')
           .fontSize(9)
           .fontColor(this.cx.muted)
           .width('100%')
           .textAlign(TextAlign.Center)
-          .margin({ top: 5 })
+          .margin({ top: 1, bottom: 3 })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 24 + this.bottomInset })
-      .backgroundColor(this.cx.bgBottom)
+      .padding({ left: 4, right: 4, top: 4, bottom: 2 })
+      .backgroundColor(this.glass().tint(this.cx.surface))
+      .backgroundBlurStyle(this.glass().blur ? BlurStyle.COMPONENT_THICK : BlurStyle.NONE,
+        Material.blurOptions(this.isDark))
+      .borderRadius(24)
+      .border({ width: 1, color: this.glass().edge(this.isDark, this.cx.line) })
+      .shadow({ radius: 14, color: this.cx.softShadow, offsetY: 4 })
+      .visualEffect(this.glass().light ? pointLight(LIGHT_PANEL, this.isDark, this.cx) : undefined)
+      .margin({ bottom: 24 + this.bottomInset })
     }
     .width('100%')
+    .padding({ left: 16, right: 16 })
+    .hitTestBehavior(HitTestMode.Transparent)
+    .onAreaChange((oldValue: Area, newValue: Area) => {
+      this.askHeight = newValue.height as number;
+    })
+  }
+
+  private glass(): Glass {
+    return Material.glass(this.lightLevel, this.reduceMotion);
   }
 
   @Builder
@@ -1756,12 +1766,12 @@ export struct ContractReview {
             } else {
               this.Report()
             }
-            if (!this.askCollapsed) {
-              this.PinnedAsk()
-            }
           }
           .width('100%')
           .height('100%')
+          if (!this.askCollapsed) {
+            this.PinnedAsk()
+          }
           if (this.askCollapsed) {
             Row() {
               if (this.report() !== undefined && this.reportView === VIEW_TEXT && this.visibleOrder().length > 0) {

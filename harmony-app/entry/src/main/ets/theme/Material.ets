@@ -39,6 +39,14 @@ export class Glass {
     this.alpha = alpha;
   }
 
+  // The bright rim of the glass, as on the floating tab bar.
+  edge(isDark: boolean, line: string): string {
+    if (!this.blur) {
+      return line;
+    }
+    return isDark ? '#33FFFFFF' : '#B3FFFFFF';
+  }
+
   // A theme color (#RRGGBB) as this glass's background.
   tint(color: string): string {
     return this.blur ? '#' + this.alpha + color.substring(1) : color;
@@ -87,6 +95,12 @@ export class Material {
       materialColor: isDark ? '#66172940' : '#88EAF0F8',
       applyShadow: true
     });
+  }
+
+  // Blur in the app's own light or dark, not the system's: the app can be dark
+  // while the system is light, and the blur would then turn white.
+  static blurOptions(isDark: boolean): BackgroundBlurStyleOptions {
+    return { colorMode: isDark ? ThemeColorMode.DARK : ThemeColorMode.LIGHT };
   }
 
   // Toasts and alert dialogs: the system's own look, which follows light and

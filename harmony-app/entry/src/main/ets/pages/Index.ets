@@ -1934,7 +1934,7 @@ struct Index {
     .justifyContent(FlexAlign.Center)
     .borderRadius(20)
     .backgroundColor(this.env.isDark ? '#661C2A44' : '#59FFFFFF')
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THIN)
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THIN, Material.blurOptions(this.env.isDark))
     .border({ width: 1, color: this.env.cx.navBorder })
     .shadow({ radius: 14, color: this.env.cx.navShadow, offsetY: 3 })
     .visualEffect(pointLight(LIGHT_BUTTON, this.env.isDark, this.env.cx))

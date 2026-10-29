@@ -155,6 +155,11 @@ only when the user asks.
   HDS components (`systemMaterialEffect.materialLevel`); for the rest the
   system picks it. Behind a floating HdsTabs bar, `gradientMask` and an opaque
   strip under the composer hide the glass entirely.
+- Self-drawn glass: give `backgroundBlurStyle` the app's color mode
+  (`Material.blurOptions`), or it follows the system and turns white when the
+  app is dark and the system light. A point light on a small Button lights it
+  up white in dark mode. A child with `width('100%')` plus side margins overflows
+  the screen; put the side room on the parent as padding.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.

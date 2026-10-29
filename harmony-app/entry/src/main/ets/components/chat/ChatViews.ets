@@ -8,7 +8,7 @@ import { ConversationText } from '../../services/ConversationText';
 import { EvidenceExtractor } from '../../services/EvidenceExtractor';
 import { ThemeColors } from '../../theme/Theme';
 import { Glass, Material } from '../../theme/Material';
-import { LIGHT_BUTTON, pointLight } from '../../theme/Light';
+import { LIGHT_BUTTON, LIGHT_PANEL, pointLight } from '../../theme/Light';
 
 // The conversation pieces 普法 and 维权 share: answers with citation chips and
 // copy actions, the model's reasoning, the answer streaming in, and the
@@ -654,16 +654,14 @@ export struct PinnedComposer {
   controller: TextAreaController = new TextAreaController();
   actions: ChatActions = new ChatActions();
 
+  private glass(): Glass {
+    return Material.glass(this.env.lightLevel, this.env.reduceMotion);
+  }
+
+  // A glass capsule floating over the conversation, as the tab bar does: the
+  // text scrolls on underneath and shows through.
   build() {
     Column() {
-      Column()
-        .width('100%')
-        .height(22)
-        .linearGradient({
-          angle: 180,
-          colors: [['#00' + this.env.cx.bgBottom.substring(1), 0.0], [this.env.cx.bgBottom, 1.0]]
-        })
-        .hitTestBehavior(HitTestMode.Transparent)
       Column() {
         if (this.chat.attachment.name.length > 0) {
           AttachmentRow({
@@ -735,21 +733,23 @@ export struct PinnedComposer {
         }
         .width('100%')
         .alignItems(VerticalAlign.Bottom)
-        .padding(4)
-        .backgroundColor(this.env.cx.surface)
-        .borderRadius(24)
-        .border({ width: 1, color: this.env.cx.line })
-        .shadow({ radius: 14, color: this.env.cx.softShadow, offsetY: 4 })
         Text('AI 内容仅供参考，重要决定请核对最新法规或咨询专业人士')
           .fontSize(9)
           .fontColor(this.env.cx.muted)
           .width('100%')
           .textAlign(TextAlign.Center)
-          .margin({ top: 5 })
+          .margin({ top: 1, bottom: 3 })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: this.env.keyboardVisible ? 8 : 6 })
-      .backgroundColor(this.env.cx.bgBottom)
+      .padding({ left: 4, right: 4, top: 4, bottom: 2 })
+      .backgroundColor(this.glass().tint(this.env.cx.surface))
+      .backgroundBlurStyle(this.glass().blur ? BlurStyle.COMPONENT_THICK : BlurStyle.NONE,
+        Material.blurOptions(this.env.isDark))
+      .borderRadius(24)
+      .border({ width: 1, color: this.glass().edge(this.env.isDark, this.env.cx.line) })
+      .shadow({ radius: 14, color: this.env.cx.softShadow, offsetY: 4 })
+      .visualEffect(this.glass().light ? pointLight(LIGHT_PANEL, this.env.isDark, this.env.cx) : undefined)
+      .margin({ bottom: this.env.keyboardVisible ? 8 : 6 })
       // The room for the floating tab bar stays see-through, so the text
       // scrolling behind shows through its glass.
       if (!this.env.keyboardVisible) {
@@ -760,6 +760,9 @@ export struct PinnedComposer {
       }
     }
     .width('100%')
+    .padding({ left: 16, right: 16 })
+    // Touches beside the capsule reach the conversation underneath.
+    .hitTestBehavior(HitTestMode.Transparent)
     .onAreaChange((oldValue: Area, newValue: Area) => {
       this.chat.pinnedHeight = newValue.height as number;
     })
@@ -810,9 +813,7 @@ export struct JumpButton {
     .height(38)
     .backgroundColor(Material.glass(this.env.lightLevel, this.env.reduceMotion).tint(this.env.cx.surface))
     .backgroundBlurStyle(Material.glass(this.env.lightLevel, this.env.reduceMotion).blur ?
-      BlurStyle.COMPONENT_THICK : BlurStyle.NONE)
-    .visualEffect(Material.glass(this.env.lightLevel, this.env.reduceMotion).light ?
-      pointLight(LIGHT_BUTTON, this.env.isDark, this.env.cx) : undefined)
+      BlurStyle.COMPONENT_THICK : BlurStyle.NONE, Material.blurOptions(this.env.isDark))
     .border({ width: 1, color: this.env.cx.line })
     .shadow({ radius: 10, color: this.env.cx.softShadow, offsetY: 3 })
     .accessibilityText('回到最新')

@@ -3,6 +3,7 @@ import { MAX_QUICK_SESSIONS, QuickSession } from '../models/ChatState';
 import { DRAWER_WIDTH, DrawerState } from '../models/DrawerState';
 import { ConversationText, HistoryGroup } from '../services/ConversationText';
 import { LIGHT_BUTTON, LIGHT_PANEL, pointLight } from '../theme/Light';
+import { Material } from '../theme/Material';
 import { ChatIcon } from './chat/ChatViews';
 
 // 历史咨询: the saved 普法 conversations, grouped by day and searchable,
@@ -329,7 +330,7 @@ export struct HistoryDrawer {
       .padding({ top: 56, bottom: 30 })
       .borderRadius({ topRight: 26, bottomRight: 26 })
       .backgroundColor(this.env.isDark ? '#E60E1B30' : '#EBF7F9FC')
-      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK, Material.blurOptions(this.env.isDark))
       .border({ width: { right: 1 }, color: this.env.cx.line })
       .shadow({ radius: 30, color: this.env.cx.softShadow, offsetX: 6 })
       .visualEffect(pointLight(LIGHT_PANEL, this.env.isDark, this.env.cx))
