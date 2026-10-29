@@ -6,7 +6,11 @@ import {
   HdsBarStyle,
   HdsTabs,
   HdsTabsController,
-  HdsTabsFloatingStyle
+  HdsTabsFloatingStyle,
+  HdsNavigation,
+  HdsNavigationMenuItemOptions,
+  HdsNavigationTitleMode,
+  ScrollEffectType
 } from '@kit.UIDesignKit';
 import {
   ApiConfig,
@@ -1277,11 +1281,28 @@ struct Index {
     }
     this.setTabBarHidden(this.currentSection === AppSection.QUICK ? this.quick.reading :
       this.rightsTab === RIGHTS_CHAT && this.caseChat.reading);
+    // In immersive reading 普法's title bar hides; the status bar goes with it
+    // so the time and icons do not sit on the text.
+    this.setStatusBarHidden(this.currentSection === AppSection.QUICK && this.quick.immersive);
+  }
+
+  private statusBarHidden: boolean = false;
+
+  private setStatusBarHidden(hidden: boolean): void {
+    if (hidden === this.statusBarHidden || this.mainWindow === undefined) {
+      return;
+    }
+    this.statusBarHidden = hidden;
+    this.mainWindow.setSpecificSystemBarEnabled('status', !hidden, true).catch(() => {
+      // The status bar then simply stays.
+    });
   }
 
   private endReading(): void {
     this.quick.reading = false;
+    this.quick.immersive = false;
     this.caseChat.reading = false;
+    this.caseChat.immersive = false;
   }
 
   // Room a conversation needs beyond the folded composer to read without
@@ -1777,7 +1798,14 @@ struct Index {
     this.quick.error = '';
     this.quick.attachment = new FileAttachment();
     this.quick.attachmentError = '';
+    this.quick.reading = false;
+    this.quick.immersive = false;
     this.headerProgress = 0;
+    // The home replaces the conversation without a scroll, so the title bar
+    // would stay in its scrolled, glass look; scrolling to the top tells it.
+    setTimeout(() => {
+      this.quickScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+    }, 50);
     this.schedulePersist();
   }
 
@@ -3013,14 +3041,126 @@ struct Index {
     .shadow({ radius: 18, color: this.env.cx.softShadow, offsetY: 6 })
   }
 
+  // The title bar's button on the right: history. The scale on the left
+  // (in the back button's place) goes back to the home.
+  private quickMenu(): HdsNavigationMenuItemOptions[] {
+    return [{
+      content: {
+        icon: $r('app.media.ic_menu'),
+        label: '历史咨询',
+        action: () => {
+          this.openHistoryDrawer();
+        }
+      }
+    }];
+  }
+
+  // The brand header at the top of the 普法 page, scrolling away with it; the
+  // title bar floats over it, clear until the page scrolls.
+  @Builder
+  private QuickHero() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Image($r('app.media.ic_scale'))
+        .width(150)
+        .height(150)
+        .fillColor(this.env.cx.headerText)
+        .opacity(0.10)
+        .margin({ top: 24, right: -14 })
+      Column() {
+        Text('劳动权益助手')
+          .fontSize(26)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.env.cx.headerText)
+        Text('懂法律，更懂你的难处')
+          .fontSize(13)
+          .fontColor(this.env.cx.headerSub)
+          .margin({ top: 6 })
+        Row()
+          .width(34)
+          .height(3)
+          .backgroundColor(this.env.cx.glow)
+          .borderRadius(2)
+          .margin({ top: 12 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+      .padding({ left: 22, right: 22, top: 104, bottom: 22 })
+    }
+    // Full width: the conversation pads its content by 16 on each side.
+    // Wider than its column, which centers it, so it reaches both edges.
+    .width('calc(100% + 32vp)')
+    .clip(true)
+    .linearGradient({
+      angle: 118,
+      colors: [[this.env.cx.headerA, 0.0], [this.env.cx.headerB, 0.58], [this.env.cx.headerC, 1.0]]
+    })
+    .margin({ top: -14 })
+  }
+
   @Builder
   private QuickPage() {
+    HdsNavigation() {
+      this.QuickConversation()
+    }
+    .titleBar({
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: Material.hdsType(),
+          materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
+        },
+        // Over the blue header the title is hidden (the header shows it large)
+        // and the buttons are white; once the bar turns to glass both darken.
+        originalStyle: {
+          contentStyle: {
+            menuStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' },
+            backIconStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' }
+          }
+        },
+        scrollEffectStyle: {
+          contentStyle: {
+            menuStyle: { iconColor: this.env.cx.brand },
+            backIconStyle: { iconColor: this.env.cx.brand }
+          }
+        }
+      },
+      // No title: the scale mark on the left, history on the right.
+      content: {
+        title: { mainTitle: '' },
+        backIcon: {
+          icon: $r('app.media.ic_scale'),
+          label: '回到普法首页',
+          isEnabled: !this.quick.sending,
+          action: () => {
+            this.startNewConsultation();
+          }
+        },
+        menu: { value: this.quickMenu() }
+      },
+      // Below the status bar, while the page's content runs up under it.
+      avoidLayoutSafeArea: true
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
+    .mode(NavigationMode.Stack)
+    // Stays while scrolling; only immersive reading (a tap) hides it.
+    .hideTitleBar(this.quick.immersive, true)
+    .bindToScrollable([this.quickScroller])
+  }
+
+  @Builder
+  private QuickConversation() {
     Conversation({
       chat: this.quick,
       conversing: this.quick.messages.length > 0,
       placeholder: '继续追问…',
       sendingLabel: '正在检索本地法规并作答…',
       askLabel: '追问',
+      tapToHide: true,
       readingRoom: this.readingRoom(false),
       picking: this.isAttachmentPicking,
       drawerSwipe: true,
@@ -3038,6 +3178,7 @@ struct Index {
   // The 普法 home, before the first question.
   @Builder
   private QuickHome() {
+    this.QuickHero()
     if (this.quick.messages.length === 0) {
       this.Composer()
       // Right under the question it is about, where it is seen.
@@ -3199,7 +3340,9 @@ struct Index {
       Column() {
         // A contract report has its own compact header, so the page's is
         // dropped to give the text more room.
-        if (!(this.currentSection === AppSection.CONTRACT &&
+        // 普法 has its own immersive title bar (QuickPage); a contract report
+        // has its own compact header.
+        if (this.currentSection !== AppSection.QUICK && !(this.currentSection === AppSection.CONTRACT &&
           (this.contractMode === CONTRACT_MODE_REPORT || this.contractMode === CONTRACT_MODE_CLAUSE))) {
           this.Header()
         }

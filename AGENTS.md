@@ -160,6 +160,11 @@ only when the user asks.
   app is dark and the system light. A point light on a small Button lights it
   up white in dark mode. A child with `width('100%')` plus side margins overflows
   the screen; put the side room on the parent as padding.
+- 普法's title bar is an HdsNavigation (`QuickPage`): its brand header is page
+  content, so the title bar must sit below the status bar
+  (`avoidLayoutSafeArea`). The bar only learns the scroll position from scroll
+  events: after replacing the content (back to the home), scroll the bound
+  scroller to the top or the bar stays in its glass look.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.

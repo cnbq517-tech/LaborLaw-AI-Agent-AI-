@@ -70,6 +70,9 @@ export struct Conversation {
   // (the 维权 case bar, the header still to collapse). A conversation needs
   // that much more to scroll, or it would fit and snap back to the top.
   @Prop readingRoom: number = 0;
+  // A tap with every control shown hides them all (immersive reading); where
+  // false, a tap only brings hidden controls back.
+  @Prop tapToHide: boolean = false;
   @BuilderParam lead: () => void = noLead;
   // Ids for measuring where the latest turn sits in the scroll.
   scrollId: string = '';
@@ -129,8 +132,8 @@ export struct Conversation {
     }
   }
 
-  private setReading(reading: boolean): void {
-    if (reading === this.chat.reading) {
+  private setReading(reading: boolean, immersive: boolean = false): void {
+    if (reading === this.chat.reading && (reading && immersive) === this.chat.immersive) {
       return;
     }
     if (reading) {
@@ -138,6 +141,7 @@ export struct Conversation {
     }
     this.getUIContext().animateTo({ duration: this.env.reduceMotion ? 0 : 220, curve: Curve.EaseOut }, () => {
       this.chat.reading = reading;
+      this.chat.immersive = reading && immersive;
     });
   }
 
@@ -163,10 +167,14 @@ export struct Conversation {
   // While reading, a tap on the conversation (not on a chip, button or
   // selected text, which handle their own taps) brings the controls back.
   private revealOnTap(): void {
-    if (!this.chat.reading || this.actions.isSelecting() || Date.now() - this.lastMoved < SCROLL_SETTLE_MS) {
+    if (this.actions.isSelecting() || Date.now() - this.lastMoved < SCROLL_SETTLE_MS) {
       return;
     }
-    this.setReading(false);
+    if (this.chat.reading) {
+      this.setReading(false);
+    } else if (this.tapToHide && this.conversing) {
+      this.setReading(true, true);
+    }
   }
 
   @Builder
@@ -262,7 +270,7 @@ export struct Conversation {
             this.events.swipeEnd(0, 0);
           })
       )
-      if (this.conversing && this.chat.reading) {
+      if (this.conversing && this.chat.reading && !this.chat.immersive) {
         AskFab({
           label: this.askLabel,
           cx: this.env.cx,
@@ -272,7 +280,7 @@ export struct Conversation {
             this.setReading(false);
           }
         })
-      } else if (this.conversing) {
+      } else if (this.conversing && !this.chat.reading) {
         PinnedComposer({
           chat: this.chat,
           forCase: this.forCase,

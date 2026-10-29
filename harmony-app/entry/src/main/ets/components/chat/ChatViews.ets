@@ -826,6 +826,7 @@ export struct JumpButton {
       if (this.chat.reading) {
         this.getUIContext().animateTo({ duration: this.env.reduceMotion ? 0 : 200, curve: Curve.EaseOut }, () => {
           this.chat.reading = false;
+          this.chat.immersive = false;
         });
       }
       setTimeout(() => {

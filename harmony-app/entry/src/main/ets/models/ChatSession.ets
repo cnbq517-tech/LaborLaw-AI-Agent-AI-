@@ -26,6 +26,9 @@ export class ChatSession {
   // Scrolled down to read: the composer is folded into a button and the tab
   // bar steps aside. Ends at the top, or from that button.
   reading: boolean = false;
+  // Reading with everything hidden, title bar and status bar too: entered by
+  // a tap on the conversation, left by another.
+  immersive: boolean = false;
 
   canSend(): boolean {
     return (this.input.trim().length > 0 || this.attachment.name.length > 0) && !this.sending;
