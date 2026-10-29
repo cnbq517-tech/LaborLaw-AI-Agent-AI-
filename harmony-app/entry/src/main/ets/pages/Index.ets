@@ -58,7 +58,6 @@ import { DrawerActions, HistoryDrawer } from '../components/HistoryDrawer';
 import { Conversation, ConversationEvents } from '../components/chat/Conversation';
 import { DossierActions, DossierPage, ProgressRing } from '../components/DossierPage';
 import { DrawerState } from '../models/DrawerState';
-import { LIGHT_BUTTON, pointLight } from '../theme/Light';
 import { LIGHT_ADAPTIVE, Material } from '../theme/Material';
 import {
   AnswerActionsView,
@@ -80,13 +79,10 @@ const CASE_TURN_ID: string = 'caseLastTurn';
 const RIGHTS_CHAT: number = 0;
 const RIGHTS_DOSSIER: number = 1;
 const RIGHTS_EVIDENCE: number = 2;
-// The header is HEADER_HEIGHT tall on a page at its top and collapses by
-// HEADER_SHRINK over the first HEADER_SCROLL of scrolling.
-const HEADER_HEIGHT: number = 188;
-const HEADER_SHRINK: number = 88;
-const HEADER_SCROLL: number = 132;
-// The 维权 case bar and page switch, folded away while reading.
-const RIGHTS_BAR_HEIGHT: number = 86;
+// The 维权 page switch under its title bar, folded away while reading.
+const RIGHTS_SEGMENT_HEIGHT: number = 46;
+// HdsNavigation's title row in MINI mode.
+const TITLE_ROW_HEIGHT: number = 56;
 const STREAM_QUICK: number = 0;
 const STREAM_CASE: number = 1;
 const STREAM_REPORT: number = 2;
@@ -159,7 +155,8 @@ struct Index {
   // True after sending in this conversation: the latest turn fills the
   // viewport so the question can sit at the top while the answer streams.
   // The same layout state for the 维权 conversation.
-  @State headerProgress: number = 0;
+  // In vp; the system title bars sit below it.
+  @State statusBarHeight: number = 40;
   @State @Watch('syncActiveCitation') sheetKind: number = 0;
   @State sheetCitations: LawCitation[] = [];
   @State quickHistory: QuickSession[] = [];
@@ -189,6 +186,7 @@ struct Index {
   private quickScroller: Scroller = new Scroller();
   private caseScroller: Scroller = new Scroller();
   private dossierScroller: Scroller = new Scroller();
+  private evidenceScroller: Scroller = new Scroller();
   private quickQuestionController: TextAreaController = new TextAreaController();
   private caseMessageController: TextAreaController = new TextAreaController();
   private detailsController: TextAreaController = new TextAreaController();
@@ -400,6 +398,10 @@ struct Index {
       const mainWindow: window.Window = await window.getLastWindow(this.abilityContext());
       this.mainWindow = mainWindow;
       mainWindow.on('keyboardHeightChange', this.keyboardHeightCallback);
+      const top: number = mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height;
+      if (top > 0) {
+        this.statusBarHeight = this.getUIContext().px2vp(top);
+      }
       this.applySystemBar();
     } catch (error) {
       this.env.keyboardVisible = false;
@@ -1260,7 +1262,6 @@ struct Index {
     this.evidenceMode = EVIDENCE_MODE_LIST;
     this.sheetKind = 0;
     this.currentSection = AppSection.CASE;
-    this.headerProgress = 1;
     // The library reads its starting query when it appears, so leave and
     // re-enter the page if it is already showing.
     if (this.rightsTab === RIGHTS_EVIDENCE) {
@@ -1283,7 +1284,8 @@ struct Index {
       this.rightsTab === RIGHTS_CHAT && this.caseChat.reading);
     // In immersive reading 普法's title bar hides; the status bar goes with it
     // so the time and icons do not sit on the text.
-    this.setStatusBarHidden(this.currentSection === AppSection.QUICK && this.quick.immersive);
+    this.setStatusBarHidden(this.currentSection === AppSection.QUICK ? this.quick.immersive :
+      this.currentSection === AppSection.CASE && this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive);
   }
 
   private statusBarHidden: boolean = false;
@@ -1307,14 +1309,16 @@ struct Index {
 
   // Room a conversation needs beyond the folded composer to read without
   // fitting the page: the header still to collapse, and the 维权 bars.
+  // Room a conversation needs beyond the folded composer to read without
+  // fitting the page. The title bars float over the content, so only the
+  // 维权 page switch, folded while reading, adds to it.
   private readingRoom(forCase: boolean): number {
-    return HEADER_SCROLL + HEADER_SHRINK * (1 - this.headerProgress) + (forCase ? RIGHTS_BAR_HEIGHT : 0);
+    return forCase ? RIGHTS_SEGMENT_HEIGHT : 0;
   }
 
   private showRights(tab: number): void {
     this.endReading();
     this.rightsTab = tab;
-    this.syncHeader();
   }
 
   // While a contract report is read the tab bar steps aside with the folded
@@ -1333,32 +1337,6 @@ struct Index {
     } catch (error) {
       // The tab bar then simply stays in place.
     }
-  }
-
-  // Matches the header to the page now showing: collapsed where the page
-  // scrolls inside its own component (合同, 证据), otherwise as far as that
-  // page is scrolled.
-  private syncHeader(): void {
-    let progress: number = 1;
-    if (this.currentSection === AppSection.QUICK ||
-      (this.currentSection === AppSection.CASE && this.rightsTab !== RIGHTS_EVIDENCE)) {
-      const scroller: Scroller = this.currentSection === AppSection.QUICK ? this.quickScroller :
-        this.rightsTab === RIGHTS_DOSSIER ? this.dossierScroller : this.caseScroller;
-      let offset: number = 0;
-      try {
-        offset = scroller.currentOffset().yOffset;
-      } catch (error) {
-        // Not laid out yet: the page starts at the top.
-      }
-      progress = this.headerProgressAt(offset, this.currentSection === AppSection.QUICK ? this.quick :
-        this.rightsTab === RIGHTS_DOSSIER ? undefined : this.caseChat);
-    }
-    if (progress === this.headerProgress) {
-      return;
-    }
-    this.getUIContext().animateTo({ duration: this.env.reduceMotion ? 0 : 200, curve: Curve.EaseOut }, () => {
-      this.headerProgress = progress;
-    });
   }
 
   private fillDossier(field: number, value: string): void {
@@ -1499,9 +1477,6 @@ struct Index {
     this.drawerActions.remove = (id: string) => {
       this.deleteQuickSession(id);
     };
-    this.quickEvents.scrolled = (scroller: Scroller) => {
-      this.updateHeaderForScroll(scroller, this.quick);
-    };
     this.quickEvents.openSettings = () => {
       this.mineOpen = true;
     };
@@ -1516,9 +1491,6 @@ struct Index {
     };
     this.quickEvents.swipeEnd = (offsetX: number, velocityX: number) => {
       this.drawer.endSwipe(this.getUIContext(), this.env.reduceMotion, offsetX, velocityX);
-    };
-    this.caseEvents.scrolled = (scroller: Scroller) => {
-      this.updateHeaderForScroll(scroller, this.caseChat);
     };
     this.caseEvents.openSettings = () => {
       this.mineOpen = true;
@@ -1538,9 +1510,6 @@ struct Index {
     };
     this.dossierActions.openSettings = () => {
       this.mineOpen = true;
-    };
-    this.dossierActions.scrolled = (scroller: Scroller) => {
-      this.updateHeaderForScroll(scroller);
     };
     this.mineActions.close = () => {
       this.mineOpen = false;
@@ -1800,55 +1769,12 @@ struct Index {
     this.quick.attachmentError = '';
     this.quick.reading = false;
     this.quick.immersive = false;
-    this.headerProgress = 0;
     // The home replaces the conversation without a scroll, so the title bar
     // would stay in its scrolled, glass look; scrolling to the top tells it.
     setTimeout(() => {
       this.quickScroller.scrollTo({ xOffset: 0, yOffset: 0 });
     }, 50);
     this.schedulePersist();
-  }
-
-  // How far the header is collapsed with the page scrolled to offset. It
-  // shrinks by HEADER_SHRINK over the first HEADER_SCROLL, and the page below
-  // grows by as much. A conversation only a little taller than its page would
-  // then fit, snap back to the top and open the header again, so one that
-  // cannot scroll past the collapse keeps the header open.
-  private headerProgressAt(offset: number, chat?: ChatSession): number {
-    if (chat !== undefined) {
-      const openViewport: number = chat.viewportHeight - HEADER_SHRINK * this.headerProgress;
-      if (chat.contentHeight - openViewport < HEADER_SCROLL + HEADER_SHRINK) {
-        return 0;
-      }
-    }
-    return this.env.reduceMotion ? (offset > 72 ? 1 : 0) : Math.max(0, Math.min(1, offset / HEADER_SCROLL));
-  }
-
-  private updateHeaderForScroll(scroller: Scroller, chat?: ChatSession): void {
-    const progress: number = this.headerProgressAt(scroller.currentOffset().yOffset, chat);
-    if (Math.abs(progress - this.headerProgress) >= 0.01 || progress === 0 || progress === 1) {
-      this.headerProgress = progress;
-    }
-  }
-
-  private sectionTitle(): string {
-    if (this.currentSection === AppSection.CASE) {
-      return this.rightsTab === RIGHTS_CHAT && this.caseChat.reading ? this.currentCaseTitle() + ' · 梳理' : '维权';
-    }
-    if (this.currentSection === AppSection.CONTRACT) {
-      return '合同体检';
-    }
-    return '劳动权益助手';
-  }
-
-  private sectionSubtitle(): string {
-    if (this.currentSection === AppSection.CASE) {
-      return '梳理事实、整理卷宗、管理证据';
-    }
-    if (this.currentSection === AppSection.CONTRACT) {
-      return '逐条检查劳动合同里的红线条款';
-    }
-    return '懂法律，更懂你的难处';
   }
 
   private scenarioIcon(index: number): Resource {
@@ -1942,108 +1868,6 @@ struct Index {
       thermoCtrl: true,
       barOpacity: 0
     };
-  }
-
-  // Room the collapsed title leaves for the header actions on the 普法 page.
-  private headerActionsWidth(): number {
-    if (this.currentSection !== AppSection.QUICK) {
-      return 0;
-    }
-    return this.quick.messages.length > 0 ? 94 : 46;
-  }
-
-  @Builder
-  private GlassIconButton(res: Resource, label: string, action: number) {
-    Column() {
-      ChatIcon({ res: res, size: 19, color: this.env.cx.gold })
-    }
-    .width(40)
-    .height(40)
-    .justifyContent(FlexAlign.Center)
-    .borderRadius(20)
-    .backgroundColor(this.env.isDark ? '#661C2A44' : '#59FFFFFF')
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THIN, Material.blurOptions(this.env.isDark))
-    .border({ width: 1, color: this.env.cx.navBorder })
-    .shadow({ radius: 14, color: this.env.cx.navShadow, offsetY: 3 })
-    .visualEffect(pointLight(LIGHT_BUTTON, this.env.isDark, this.env.cx))
-    .enabled(action === 1 || !this.quick.sending)
-    .opacity(action === 1 || !this.quick.sending ? 1 : 0.5)
-    .accessibilityText(label)
-    .onClick(() => {
-      if (action === 0) {
-        this.startNewConsultation();
-      } else {
-        this.openHistoryDrawer();
-      }
-    })
-  }
-
-  @Builder
-  private Header() {
-    Stack() {
-      Row() {
-        Blank()
-        Image($r('app.media.ic_scale'))
-          .width(150 - 50 * this.headerProgress)
-          .height(150 - 50 * this.headerProgress)
-          .fillColor(this.env.cx.headerText)
-          .opacity(0.10)
-          .margin({ top: 24, right: -14 })
-      }
-      .width('100%')
-      .height('100%')
-      .alignItems(VerticalAlign.Top)
-
-      Column() {
-        Text(this.sectionTitle())
-          .fontSize(26 - 6 * this.headerProgress)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.env.cx.headerText)
-        Text(this.sectionSubtitle())
-          .fontSize(13)
-          .fontColor(this.env.cx.headerSub)
-          .height(20 * (1 - this.headerProgress))
-          .opacity(Math.max(0, 1 - 2 * this.headerProgress))
-          .margin({ top: 6 * (1 - this.headerProgress) })
-        Row()
-          .width(34)
-          .height(3 * (1 - this.headerProgress))
-          .opacity(Math.max(0, 1 - 2 * this.headerProgress))
-          .backgroundColor(this.env.cx.glow)
-          .borderRadius(2)
-          .margin({ top: 12 * (1 - this.headerProgress) })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .width('100%')
-      .height('100%')
-      .padding({
-        left: 22 + this.headerActionsWidth() * this.headerProgress,
-        right: 22,
-        top: 54 - 2 * this.headerProgress,
-        bottom: 18
-      })
-
-      if (this.currentSection === AppSection.QUICK) {
-        // One set of actions that glides from under the gold accent line
-        // (expanded) to in front of the title (collapsed).
-        Row({ space: 8 }) {
-          this.GlassIconButton($r('app.media.ic_menu'), '历史咨询', 1)
-          if (this.quick.messages.length > 0) {
-            this.GlassIconButton($r('app.media.ic_home'), '返回普法首页', 0)
-          }
-        }
-        .position({ x: 22 - 6 * this.headerProgress, y: 138 - 92 * this.headerProgress })
-      }
-    }
-    .width('100%')
-    .height(HEADER_HEIGHT - HEADER_SHRINK * this.headerProgress)
-    .clip(true)
-    .linearGradient({
-      angle: 118,
-      colors: [[this.env.cx.headerA, 0.0], [this.env.cx.headerB, 0.58], [this.env.cx.headerC, 1.0]]
-    })
   }
 
   @Builder
@@ -2565,8 +2389,10 @@ struct Index {
       },
       initialQuery: this.evidenceQuery,
       initialCategory: this.evidenceCategory,
-      initialImport: this.evidenceImport
+      initialImport: this.evidenceImport,
+      listScroller: this.evidenceScroller
     })
+    .padding({ top: this.rightsTopInset() })
   }
 
   @Builder
@@ -2661,45 +2487,6 @@ struct Index {
   }
 
   // Current case name, the case list, and a new case, above the 维权 pages.
-  @Builder
-  private CaseBar() {
-    Row({ space: 8 }) {
-      Row({ space: 4 }) {
-        Text(this.currentCaseTitle())
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.env.cx.text)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .flexShrink(1)
-        // Cases with content: the archive plus the current one unless it is empty.
-        Text(this.caseState.history.length > 0 ?
-          '▾ ' + (this.caseState.history.length + (this.hasCaseContent() ? 1 : 0)).toString() + ' 个案件' : '▾')
-          .fontSize(11)
-          .fontColor(this.env.cx.muted)
-      }
-      .layoutWeight(1)
-      .height(34)
-      .accessibilityText('我的案件')
-      .onClick(() => {
-        this.sheetKind = SHEET_CASES;
-      })
-      Text('＋ 新案件')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.hasCaseContent() && !this.caseBusy() ? this.env.cx.gold : this.env.cx.faint)
-        .padding({ left: 11, right: 11, top: 6, bottom: 6 })
-        .backgroundColor(this.env.cx.tint)
-        .borderRadius(14)
-        .enabled(this.hasCaseContent() && !this.caseBusy())
-        .onClick(() => {
-          this.startNewCase();
-        })
-    }
-    .width('100%')
-    .padding({ left: 18, right: 16, top: 8 })
-  }
-
   // Computed here rather than passed in: a by-value builder argument would
   // keep showing the first value it was given.
   private rightsLabel(tab: number): string {
@@ -2736,27 +2523,11 @@ struct Index {
   // library, as three pages of one section.
   @Builder
   private RightsPage() {
+    HdsNavigation() {
     Column() {
-      // Folded while reading the conversation; the header names the case.
-      if (!(this.rightsTab === RIGHTS_CHAT && this.caseChat.reading)) {
-        Column() {
-          this.CaseBar()
-          Row() {
-            this.RightsSegment(RIGHTS_CHAT)
-            this.RightsSegment(RIGHTS_DOSSIER)
-            this.RightsSegment(RIGHTS_EVIDENCE)
-          }
-          .padding(3)
-          .backgroundColor(this.env.cx.surface2)
-          .borderRadius(12)
-          .margin({ left: 16, right: 16, top: 4, bottom: 2 })
-        }
-        .width('100%')
-        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -24 })))
-      }
       // 梳理 and 卷宗 stay alive while hidden, so each keeps its scroll
-      // position and the header can follow it. 证据 is rebuilt each time: it
-      // reads its starting query when it appears.
+      // position and the title bar can follow it. 证据 is rebuilt each time:
+      // it reads its starting query when it appears.
       Stack() {
         Column() {
           this.CaseChat()
@@ -2776,7 +2547,8 @@ struct Index {
             detailsController: this.detailsController,
             scroller: this.dossierScroller,
             actions: this.dossierActions,
-            chatActions: this.chatActions
+            chatActions: this.chatActions,
+            topInset: this.rightsTopInset()
           })
         }
         .width('100%')
@@ -2791,6 +2563,103 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    }
+    .titleBar({
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: Material.hdsType(),
+          materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
+        },
+        originalStyle: {
+          contentStyle: {
+            titleStyle: { mainTitleColor: this.env.cx.text },
+            menuStyle: { iconColor: this.env.cx.brand },
+            backIconStyle: { iconColor: this.env.cx.brand }
+          }
+        },
+        scrollEffectStyle: {
+          contentStyle: {
+            titleStyle: { mainTitleColor: this.env.cx.text },
+            menuStyle: { iconColor: this.env.cx.brand },
+            backIconStyle: { iconColor: this.env.cx.brand }
+          }
+        }
+      },
+      // The case is the title; its list and a new case on the right; the
+      // page switch under it, folded while reading the conversation.
+      content: {
+        title: { mainTitle: this.currentCaseTitle() },
+        backIcon: {
+          icon: $r('app.media.ic_scale'),
+          label: '回到梳理',
+          action: () => {
+            this.showRights(RIGHTS_CHAT);
+            setTimeout(() => {
+              this.caseScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+            }, 50);
+          }
+        },
+        menu: { value: this.rightsMenu() },
+        bottomBuilder: this.rightsTab === RIGHTS_CHAT && this.caseChat.reading ? undefined : {
+          builder: (): void => {
+            this.RightsSegments()
+          },
+          height: RIGHTS_SEGMENT_HEIGHT
+        }
+      },
+      avoidLayoutSafeArea: true
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
+    .mode(NavigationMode.Stack)
+    // Stays while scrolling; only immersive reading (a tap) hides it.
+    .hideTitleBar(this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive, true)
+    .bindToScrollable([this.caseScroller, this.dossierScroller, this.evidenceScroller])
+  }
+
+  // The title bar's room over the 维权 pages: status bar, title row and page
+  // switch.
+  private rightsTopInset(): number {
+    return this.statusBarHeight + TITLE_ROW_HEIGHT + RIGHTS_SEGMENT_HEIGHT;
+  }
+
+  private rightsMenu(): HdsNavigationMenuItemOptions[] {
+    return [{
+      content: {
+        icon: $r('app.media.ic_folder'),
+        label: '我的案件',
+        action: () => {
+          this.sheetKind = SHEET_CASES;
+        }
+      }
+    }, {
+      content: {
+        icon: $r('app.media.ic_plus'),
+        label: '新案件',
+        isEnabled: this.hasCaseContent() && !this.caseBusy(),
+        action: () => {
+          this.startNewCase();
+        }
+      }
+    }];
+  }
+
+  @Builder
+  private RightsSegments() {
+    Row() {
+      this.RightsSegment(RIGHTS_CHAT)
+      this.RightsSegment(RIGHTS_DOSSIER)
+      this.RightsSegment(RIGHTS_EVIDENCE)
+    }
+    .padding(3)
+    .backgroundColor('#66' + this.env.cx.surface2.substring(1))
+    .borderRadius(12)
+    .margin({ left: 16, right: 16, top: 2, bottom: 6 })
   }
 
   @Builder
@@ -2806,7 +2675,8 @@ struct Index {
       evidenceCount: this.evidenceCount,
       contractCount: this.contractReportCount,
       busy: this.quick.sending || this.caseChat.sending || this.reportRun.sending,
-      actions: this.mineActions
+      actions: this.mineActions,
+      statusBarHeight: this.statusBarHeight
     })
   }
 
@@ -2817,6 +2687,10 @@ struct Index {
       isDark: this.env.isDark,
       lightLevel: this.env.lightLevel,
       reduceMotion: this.env.reduceMotion,
+      statusBarHeight: this.statusBarHeight,
+      onImmersiveChange: (immersive: boolean) => {
+        this.setStatusBarHidden(immersive && this.currentSection === AppSection.CONTRACT);
+      },
       mode: $contractMode,
       embedded: true,
       bottomInset: this.env.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,
@@ -2840,17 +2714,6 @@ struct Index {
       },
       onAsk: (title: string, body: string, question: string) => {
         this.askAboutContract(title, body, question);
-      }
-    })
-  }
-
-  @Builder
-  private ErrorHint(message: string) {
-    ErrorNotice({
-      message: message,
-      cx: this.env.cx,
-      onSettings: () => {
-        this.mineOpen = true;
       }
     })
   }
@@ -3232,6 +3095,8 @@ struct Index {
       placeholder: this.caseChat.messages.length > 0 ? '补充案情或追问…' : '从事情的起因开始说…',
       sendingLabel: '正在梳理案件信息…',
       askLabel: '补充案情',
+      tapToHide: true,
+      topInset: this.rightsTopInset(),
       readingRoom: this.readingRoom(true),
       picking: this.isAttachmentPicking,
       scrollId: CASE_SCROLL_ID,
@@ -3338,14 +3203,7 @@ struct Index {
   build() {
     Stack() {
       Column() {
-        // A contract report has its own compact header, so the page's is
-        // dropped to give the text more room.
-        // 普法 has its own immersive title bar (QuickPage); a contract report
-        // has its own compact header.
-        if (this.currentSection !== AppSection.QUICK && !(this.currentSection === AppSection.CONTRACT &&
-          (this.contractMode === CONTRACT_MODE_REPORT || this.contractMode === CONTRACT_MODE_CLAUSE))) {
-          this.Header()
-        }
+        // Each section has its own title bar (HdsNavigation) over its content.
         HdsTabs({
           barPosition: BarPosition.End,
           index: this.currentSection,
@@ -3375,7 +3233,7 @@ struct Index {
           this.currentSection = index as AppSection;
           this.endReading();
           this.setTabBarHidden(false);
-          this.syncHeader();
+          this.setStatusBarHidden(false);
         })
         .layoutWeight(1)
         .width('100%')

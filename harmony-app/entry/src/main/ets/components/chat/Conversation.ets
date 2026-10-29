@@ -32,8 +32,6 @@ export const SCROLL_SETTLE_MS: number = 200;
 
 // What the conversation tells the page beyond ChatActions.
 export class ConversationEvents {
-  scrolled: (scroller: Scroller) => void = (scroller: Scroller) => {
-  };
   // ErrorNotice's 去「我的」.
   openSettings: () => void = () => {
   };
@@ -73,6 +71,8 @@ export struct Conversation {
   // A tap with every control shown hides them all (immersive reading); where
   // false, a tap only brings hidden controls back.
   @Prop tapToHide: boolean = false;
+  // Room at the top for a title bar floating over the content.
+  @Prop topInset: number = 0;
   @BuilderParam lead: () => void = noLead;
   // Ids for measuring where the latest turn sits in the scroll.
   scrollId: string = '';
@@ -222,7 +222,7 @@ export struct Conversation {
           }
         }
         .width('100%')
-        .padding({ left: 16, right: 16, top: 14,
+        .padding({ left: 16, right: 16, top: 14 + this.topInset,
           bottom: !this.conversing ? CONTENT_BOTTOM : this.chat.reading ? READING_BOTTOM : this.chat.pinnedHeight + 12 })
         .onAreaChange((oldValue: Area, newValue: Area) => {
           this.chat.contentHeight = newValue.height as number;
@@ -242,7 +242,6 @@ export struct Conversation {
         this.chat.viewportHeight = newValue.height as number;
       })
       .onDidScroll((xOffset: number, yOffset: number, state: ScrollState) => {
-        this.events.scrolled(this.scroller);
         this.updateJump();
         this.trackReading(yOffset, state);
         if (state !== ScrollState.Idle) {

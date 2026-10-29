@@ -1,5 +1,12 @@
 import { common } from '@kit.AbilityKit';
 import { LengthMetrics } from '@kit.ArkUI';
+import {
+  BottomBuilderParams,
+  HdsNavigation,
+  HdsNavigationBackButtonItemOptions,
+  HdsNavigationTitleMode,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { ContractAi } from '../contract/ContractAi';
 import { ContractDocument, DocLine, DocSegment } from '../contract/ContractDocument';
@@ -53,6 +60,9 @@ export const CONTRACT_MODE_HOME: number = 0;
 export const CONTRACT_MODE_FACTS: number = 1;
 export const CONTRACT_MODE_REPORT: number = 2;
 export const CONTRACT_MODE_CLAUSE: number = 3;
+// HdsNavigation's title row in MINI mode, and the report's filter row under it.
+const TITLE_ROW_HEIGHT: number = 56;
+const FILTER_ROW_HEIGHT: number = 40;
 
 const DISCLAIMER: string = '本结果为规则审查与 AI 辅助审查，用于提示合同风险，不构成法律意见。各地裁审口径不一，' +
   '涉及重大权益时请咨询律师或当地劳动仲裁部门。';
@@ -91,6 +101,12 @@ export struct ContractReview {
   // 光感强度 and reduced motion, for the glass of the floating controls.
   @Prop lightLevel: number = 0;
   @Prop reduceMotion: boolean = false;
+  // In vp; the title bar sits below it.
+  @Prop statusBarHeight: number = 40;
+  // Everything hidden while reading the report (a tap), title bar included.
+  @State immersive: boolean = false;
+  onImmersiveChange: (immersive: boolean) => void = (immersive: boolean) => {
+  };
   @Link @Watch('modeChanged') mode: number;
   // Shown as the 合同 section rather than as a cover: the home page has no
   // header of its own, and content leaves room for the floating tab bar.
@@ -163,6 +179,9 @@ export struct ContractReview {
   // While reading, the composer folds into a small 问 AI button.
   @State askCollapsed: boolean = false;
   private docScroller: Scroller = new Scroller();
+  private homeScroller: Scroller = new Scroller();
+  private factsScroller: Scroller = new Scroller();
+  private reportScroller: Scroller = new Scroller();
   private downScroll: number = 0;
   private navScrollUntil: number = 0;
   private lastMoved: number = 0;
@@ -211,6 +230,9 @@ export struct ContractReview {
     }
     this.askCollapsed = folded;
     this.onReadingChange(folded);
+    if (!folded) {
+      this.setImmersive(false);
+    }
   }
 
   private context(): common.UIAbilityContext {
@@ -635,42 +657,6 @@ export struct ContractReview {
   }
 
   @Builder
-  private Header() {
-    Row({ space: 12 }) {
-      Text('‹')
-        .fontSize(24)
-        .fontColor(this.cx.gold)
-        .textAlign(TextAlign.Center)
-        .width(40)
-        .height(40)
-        .backgroundColor(this.cx.tint)
-        .borderRadius(20)
-        .accessibilityText('返回')
-        .onClick(() => {
-          this.goBack();
-        })
-      Column({ space: 3 }) {
-        Text(this.mode === CONTRACT_MODE_HOME ? '合同体检' : this.mode === CONTRACT_MODE_FACTS ? '补充几项事实' :
-          this.mode === CONTRACT_MODE_CLAUSE && this.report() !== undefined ?
-          ContractReviewService.anchorLabel(this.report()!, this.anchorId) : (this.report()?.fileName ?? '审查结果'))
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.cx.text)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.mode === CONTRACT_MODE_HOME ? '规则审查在手机上完成 · 报告仅保存在本机' :
-          this.mode === CONTRACT_MODE_FACTS ? '缺了也能审，相关结论会标「待确认」' : '条款级审查 · 风险挂在具体条款上')
-          .fontSize(11.5)
-          .fontColor(this.cx.muted)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: this.embedded ? 4 : 52, bottom: 12 })
-  }
-
-  @Builder
   private Card(title: string, sub: string, res: Resource, action: () => void) {
     Row({ space: 11 }) {
       Column() {
@@ -702,7 +688,7 @@ export struct ContractReview {
 
   @Builder
   private Home() {
-    Scroll() {
+    Scroll(this.homeScroller) {
       Column({ space: 12 }) {
         this.Card('选择合同文件', '支持 DOCX、PDF（含扫描件）、TXT', $r('app.media.ic_doc'), () => {
           this.pickFile();
@@ -763,7 +749,7 @@ export struct ContractReview {
         }
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: this.embedded ? 12 : 0, bottom: 40 + this.bottomInset })
+      .padding({ left: 16, right: 16, top: 12 + this.topInset(), bottom: 40 + this.bottomInset })
     }
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
@@ -803,7 +789,7 @@ export struct ContractReview {
 
   @Builder
   private Facts() {
-    Scroll() {
+    Scroll(this.factsScroller) {
       Column({ space: 12 }) {
         if (this.source !== undefined) {
           Column({ space: 4 }) {
@@ -924,7 +910,7 @@ export struct ContractReview {
         .border({ width: 1, color: this.cx.line })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 120 + this.bottomInset })
+      .padding({ left: 16, right: 16, top: this.topInset(), bottom: 120 + this.bottomInset })
     }
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
@@ -983,7 +969,7 @@ export struct ContractReview {
   @Builder
   private Report() {
     if (this.report() !== undefined) {
-      Scroll() {
+      Scroll(this.reportScroller) {
         Column({ space: 10 }) {
           Column({ space: 8 }) {
             Row() {
@@ -1062,7 +1048,7 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%')
         }
         .width('100%')
-        .padding({ left: 16, right: 16, bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
+        .padding({ left: 16, right: 16, top: this.topInset(), bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
         .onClick(() => {
           this.revealOnTap();
         })
@@ -1087,10 +1073,35 @@ export struct ContractReview {
   // scrolls it and folds it again.
   // While reading, a tap on the text or list (not on a highlight or card,
   // which open what they show) brings the composer back, as in 普法 and 维权.
+  // A tap on the text: brings hidden controls back, or with everything shown
+  // hides it all (immersive reading), as in 普法 and 维权.
   private revealOnTap(): void {
-    if (this.askCollapsed && Date.now() - this.lastMoved >= SCROLL_SETTLE_MS) {
-      this.setFolded(false);
+    if (Date.now() - this.lastMoved < SCROLL_SETTLE_MS) {
+      return;
     }
+    if (this.askCollapsed) {
+      this.setFolded(false);
+    } else if (this.mode === CONTRACT_MODE_REPORT || this.mode === CONTRACT_MODE_CLAUSE) {
+      this.setFolded(true);
+      this.setImmersive(true);
+    }
+  }
+
+  private setImmersive(immersive: boolean): void {
+    if (immersive === this.immersive) {
+      return;
+    }
+    this.getUIContext().animateTo({ duration: this.reduceMotion ? 0 : 220, curve: Curve.EaseOut }, () => {
+      this.immersive = immersive;
+    });
+    this.onImmersiveChange(immersive);
+  }
+
+  // Room for the title bar floating over the page: status bar, title row and,
+  // in a report, the filters.
+  private topInset(): number {
+    return this.statusBarHeight + TITLE_ROW_HEIGHT +
+      (this.mode === CONTRACT_MODE_REPORT ? FILTER_ROW_HEIGHT : 0);
   }
 
   private foldAsk(delta: number): void {
@@ -1099,88 +1110,6 @@ export struct ContractReview {
     if (this.downScroll > 24) {
       this.setFolded(true);
     }
-  }
-
-  // Compact header for a report: back, name, position among the findings, then
-  // the severity filters and the text / list switch.
-  @Builder
-  private ReportHeader() {
-    Column({ space: 8 }) {
-      Row({ space: 10 }) {
-        Text('‹')
-          .fontSize(22)
-          .fontColor(this.cx.gold)
-          .textAlign(TextAlign.Center)
-          .width(34)
-          .height(34)
-          .backgroundColor(this.cx.tint)
-          .borderRadius(17)
-          .accessibilityText('返回')
-          .onClick(() => {
-            this.goBack();
-          })
-        Text(this.report()?.fileName ?? '审查结果')
-          .fontSize(17)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.cx.text)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-        if (this.visibleOrder().length > 0) {
-          Text(this.visibleOrder().length.toString() + ' 处问题')
-            .fontSize(12)
-            .fontColor(this.cx.muted)
-        }
-      }
-      .width('100%')
-      Row({ space: 6 }) {
-        ForEach(SEVERITIES.filter((sev: string) => this.report() !== undefined && this.count(this.report()!, sev) > 0),
-          (sev: string) => {
-            Text(sev + ' ' + this.count(this.report()!, sev).toString())
-              .fontSize(11)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.severityFilter === sev ? this.cx.onBrand : this.severityColor(sev))
-              .padding({ left: 9, right: 9, top: 4, bottom: 4 })
-              .backgroundColor(this.severityFilter === sev ? this.severityColor(sev) : this.severityBg(sev))
-              .borderRadius(11)
-              .accessibilityText('只看' + sev)
-              .onClick(() => {
-                this.severityFilter = this.severityFilter === sev ? '' : sev;
-                this.navPos = -1;
-              })
-          })
-        Blank()
-        Row() {
-          Text('原文')
-            .fontSize(11.5)
-            .fontColor(this.reportView === VIEW_TEXT ? this.cx.text : this.cx.muted)
-            .fontWeight(this.reportView === VIEW_TEXT ? FontWeight.Bold : FontWeight.Regular)
-            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-            .backgroundColor(this.reportView === VIEW_TEXT ? this.cx.surface : Color.Transparent)
-            .borderRadius(9)
-            .onClick(() => {
-              this.reportView = VIEW_TEXT;
-            })
-          Text('清单')
-            .fontSize(11.5)
-            .fontColor(this.reportView === VIEW_LIST ? this.cx.text : this.cx.muted)
-            .fontWeight(this.reportView === VIEW_LIST ? FontWeight.Bold : FontWeight.Regular)
-            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-            .backgroundColor(this.reportView === VIEW_LIST ? this.cx.surface : Color.Transparent)
-            .borderRadius(9)
-            .onClick(() => {
-              this.reportView = VIEW_LIST;
-            })
-        }
-        .padding(2)
-        .backgroundColor(this.cx.surface2)
-        .borderRadius(11)
-      }
-      .width('100%')
-    }
-    .width('100%')
-    .padding({ left: 14, right: 12, top: this.embedded ? 40 : 52, bottom: 8 })
-    .border({ width: { bottom: 1 }, color: { bottom: this.cx.line } })
   }
 
   @Builder
@@ -1331,7 +1260,7 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%').margin({ top: 16 })
         }
         .width('100%')
-        .padding({ left: 16, right: 22, top: 10, bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
+        .padding({ left: 16, right: 22, top: 10 + this.topInset(), bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
         .onClick(() => {
           this.revealOnTap();
         })
@@ -1704,108 +1633,269 @@ export struct ContractReview {
     .align(Alignment.Top)
   }
 
-  build() {
-    Column() {
-      if (this.mode === CONTRACT_MODE_REPORT) {
-        this.ReportHeader()
-      } else if (!this.embedded || this.mode !== CONTRACT_MODE_HOME) {
-        this.Header()
+  private titleText(): string {
+    if (this.mode === CONTRACT_MODE_HOME) {
+      return '合同体检';
+    }
+    if (this.mode === CONTRACT_MODE_FACTS) {
+      return '补充几项事实';
+    }
+    if (this.mode === CONTRACT_MODE_CLAUSE && this.report() !== undefined) {
+      return ContractReviewService.anchorLabel(this.report()!, this.anchorId);
+    }
+    return this.report()?.fileName ?? '审查结果';
+  }
+
+  private subtitleText(): string {
+    if (this.mode === CONTRACT_MODE_HOME) {
+      return '规则审查在手机上完成 · 报告仅保存在本机';
+    }
+    if (this.mode === CONTRACT_MODE_FACTS) {
+      return '缺了也能审，相关结论会标「待确认」';
+    }
+    const found: number = this.visibleOrder().length;
+    return found > 0 ? found.toString() + ' 处问题' : '条款级审查 · 风险挂在具体条款上';
+  }
+
+  // Under the title bar in a report: the severity filters and the
+  // text / list switch.
+  @Builder
+  private ReportFilters() {
+    Row({ space: 6 }) {
+      ForEach(SEVERITIES.filter((sev: string) => this.report() !== undefined && this.count(this.report()!, sev) > 0),
+        (sev: string) => {
+          Text(sev + ' ' + this.count(this.report()!, sev).toString())
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.severityFilter === sev ? this.cx.onBrand : this.severityColor(sev))
+            .padding({ left: 9, right: 9, top: 4, bottom: 4 })
+            .backgroundColor(this.severityFilter === sev ? this.severityColor(sev) : this.severityBg(sev))
+            .borderRadius(11)
+            .accessibilityText('只看' + sev)
+            .onClick(() => {
+              this.severityFilter = this.severityFilter === sev ? '' : sev;
+              this.navPos = -1;
+            })
+        })
+      Blank()
+      Row() {
+        Text('原文')
+          .fontSize(11.5)
+          .fontColor(this.reportView === VIEW_TEXT ? this.cx.text : this.cx.muted)
+          .fontWeight(this.reportView === VIEW_TEXT ? FontWeight.Bold : FontWeight.Regular)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .backgroundColor(this.reportView === VIEW_TEXT ? this.cx.surface : Color.Transparent)
+          .borderRadius(9)
+          .onClick(() => {
+            this.reportView = VIEW_TEXT;
+          })
+        Text('清单')
+          .fontSize(11.5)
+          .fontColor(this.reportView === VIEW_LIST ? this.cx.text : this.cx.muted)
+          .fontWeight(this.reportView === VIEW_LIST ? FontWeight.Bold : FontWeight.Regular)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .backgroundColor(this.reportView === VIEW_LIST ? this.cx.surface : Color.Transparent)
+          .borderRadius(9)
+          .onClick(() => {
+            this.reportView = VIEW_LIST;
+          })
       }
-      if (this.notice.length > 0) {
+      .padding(2)
+      .backgroundColor(this.cx.surface2)
+      .borderRadius(11)
+    }
+    .width('100%')
+    .padding({ left: 14, right: 12, top: 2, bottom: 8 })
+  }
+
+  // The scale on the home, as in the other sections; back elsewhere.
+  private backIcon(): HdsNavigationBackButtonItemOptions {
+    if (this.mode === CONTRACT_MODE_HOME) {
+      const home: HdsNavigationBackButtonItemOptions = {
+        icon: $r('app.media.ic_scale'),
+        label: '合同体检',
+        action: () => {
+          this.homeScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+        }
+      };
+      return home;
+    }
+    const back: HdsNavigationBackButtonItemOptions = {
+      label: '返回',
+      action: () => {
+        this.goBack();
+      }
+    };
+    return back;
+  }
+
+  private bottomArea(): BottomBuilderParams | undefined {
+    if (this.mode !== CONTRACT_MODE_REPORT) {
+      return undefined;
+    }
+    const filters: BottomBuilderParams = {
+      builder: (): void => {
+        this.ReportFilters()
+      },
+      height: FILTER_ROW_HEIGHT
+    };
+    return filters;
+  }
+
+  // The page under a system title bar, as 普法 and 维权: glass once the
+  // content scrolls under it, the report's filters in its bottom area.
+  build() {
+    HdsNavigation() {
+      this.Body()
+    }
+    .titleBar({
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: Material.hdsType(),
+          materialLevel: Material.hdsLevel(this.lightLevel, this.reduceMotion)
+        },
+        originalStyle: {
+          contentStyle: {
+            titleStyle: { mainTitleColor: this.cx.text, subTitleColor: this.cx.muted },
+            menuStyle: { iconColor: this.cx.brand },
+            backIconStyle: { iconColor: this.mode === CONTRACT_MODE_HOME ? this.cx.brand : this.cx.gold }
+          }
+        },
+        scrollEffectStyle: {
+          contentStyle: {
+            titleStyle: { mainTitleColor: this.cx.text, subTitleColor: this.cx.muted },
+            menuStyle: { iconColor: this.cx.brand },
+            backIconStyle: { iconColor: this.mode === CONTRACT_MODE_HOME ? this.cx.brand : this.cx.gold }
+          }
+        }
+      },
+      content: {
+        title: { mainTitle: this.titleText(), subTitle: this.subtitleText() },
+        backIcon: this.backIcon(),
+        bottomBuilder: this.bottomArea()
+      },
+      avoidLayoutSafeArea: true
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
+    .mode(NavigationMode.Stack)
+    .hideTitleBar(this.immersive, true)
+    .bindToScrollable([this.homeScroller, this.factsScroller, this.reportScroller, this.docScroller])
+  }
+
+  @Builder
+  private Body() {
+    Stack({ alignContent: Alignment.Top }) {
+      Column() {
+        if (this.mode === CONTRACT_MODE_FACTS) {
+          Stack({ alignContent: Alignment.Bottom }) {
+            this.Facts()
+            Column({ space: 8 }) {
+              if (this.busy) {
+                Text(this.progress).fontSize(12).fontColor(this.cx.muted)
+              }
+              Row({ space: 10 }) {
+                if (this.busy && this.handle !== undefined) {
+                  Button('停止')
+                    .fontSize(14)
+                    .fontColor(this.cx.danger)
+                    .backgroundColor(this.cx.dangerBg)
+                    .height(44)
+                    .layoutWeight(1)
+                    .onClick(() => {
+                      this.handle?.cancel();
+                    })
+                }
+                Button(this.busy ? '审查中…' : '开始审查')
+                  .fontSize(15)
+                  .fontColor(this.cx.onGold)
+                  .backgroundColor(this.cx.gold)
+                  .height(44)
+                  .layoutWeight(2)
+                  .enabled(!this.busy)
+                  .onClick(() => {
+                    this.start();
+                  })
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 10, bottom: 28 + this.bottomInset })
+            .backgroundColor(this.cx.bgBottom)
+          }
+          .layoutWeight(1)
+        } else if (this.mode === CONTRACT_MODE_REPORT || this.mode === CONTRACT_MODE_CLAUSE) {
+          Stack({ alignContent: Alignment.BottomEnd }) {
+            Column() {
+              if (this.report() !== undefined && this.reportView === VIEW_TEXT) {
+                this.DocView()
+              } else {
+                this.Report()
+              }
+            }
+            .width('100%')
+            .height('100%')
+            if (!this.askCollapsed) {
+              this.PinnedAsk()
+            }
+            if (this.askCollapsed && !this.immersive) {
+              Row() {
+                if (this.report() !== undefined && this.reportView === VIEW_TEXT && this.visibleOrder().length > 0) {
+                  this.FindingNavigator()
+                }
+                Blank()
+                AskFab({
+                  label: '问 AI',
+                  cx: this.cx,
+                  isDark: this.isDark,
+                  glass: Material.glass(this.lightLevel, this.reduceMotion),
+                  onOpen: () => {
+                    this.setFolded(false);
+                  }
+                })
+              }
+              .width('100%')
+              .alignItems(VerticalAlign.Bottom)
+            }
+          }
+          .layoutWeight(1)
+        } else {
+          this.Home()
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .linearGradient({
+        angle: 180,
+        colors: [[this.cx.bgTop, 0.0], [this.cx.bgBottom, 1.0]]
+      })
+      // Below the title bar, over the page.
+      if (this.mode === CONTRACT_MODE_HOME && this.busy) {
+        Text(this.progress)
+          .fontSize(12)
+          .fontColor(this.cx.muted)
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.cx.surface2)
+          .margin({ top: this.topInset() })
+      } else if (this.notice.length > 0) {
         Text(this.notice)
           .fontSize(12)
           .fontColor(this.cx.warn)
           .width('100%')
-          .padding({ left: 16, right: 16, bottom: 8 })
+          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.cx.dangerBg)
+          .margin({ top: this.topInset() })
           .onClick(() => {
             this.notice = '';
           })
       }
-      if (this.mode === CONTRACT_MODE_FACTS) {
-        Stack({ alignContent: Alignment.Bottom }) {
-          this.Facts()
-          Column({ space: 8 }) {
-            if (this.busy) {
-              Text(this.progress).fontSize(12).fontColor(this.cx.muted)
-            }
-            Row({ space: 10 }) {
-              if (this.busy && this.handle !== undefined) {
-                Button('停止')
-                  .fontSize(14)
-                  .fontColor(this.cx.danger)
-                  .backgroundColor(this.cx.dangerBg)
-                  .height(44)
-                  .layoutWeight(1)
-                  .onClick(() => {
-                    this.handle?.cancel();
-                  })
-              }
-              Button(this.busy ? '审查中…' : '开始审查')
-                .fontSize(15)
-                .fontColor(this.cx.onGold)
-                .backgroundColor(this.cx.gold)
-                .height(44)
-                .layoutWeight(2)
-                .enabled(!this.busy)
-                .onClick(() => {
-                  this.start();
-                })
-            }
-            .width('100%')
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 10, bottom: 28 + this.bottomInset })
-          .backgroundColor(this.cx.bgBottom)
-        }
-        .layoutWeight(1)
-      } else if (this.mode === CONTRACT_MODE_REPORT || this.mode === CONTRACT_MODE_CLAUSE) {
-        Stack({ alignContent: Alignment.BottomEnd }) {
-          Column() {
-            if (this.report() !== undefined && this.reportView === VIEW_TEXT) {
-              this.DocView()
-            } else {
-              this.Report()
-            }
-          }
-          .width('100%')
-          .height('100%')
-          if (!this.askCollapsed) {
-            this.PinnedAsk()
-          }
-          if (this.askCollapsed) {
-            Row() {
-              if (this.report() !== undefined && this.reportView === VIEW_TEXT && this.visibleOrder().length > 0) {
-                this.FindingNavigator()
-              }
-              Blank()
-              AskFab({
-                label: '问 AI',
-                cx: this.cx,
-                isDark: this.isDark,
-                glass: Material.glass(this.lightLevel, this.reduceMotion),
-                onOpen: () => {
-                  this.setFolded(false);
-                }
-              })
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Bottom)
-          }
-        }
-        .layoutWeight(1)
-      } else {
-        if (this.busy) {
-          Text(this.progress).fontSize(12).fontColor(this.cx.muted).padding({ left: 16, bottom: 8 }).width('100%')
-        }
-        this.Home()
-      }
     }
-    .width('100%')
-    .height('100%')
-    .linearGradient({
-      angle: 180,
-      colors: [[this.cx.bgTop, 0.0], [this.cx.bgBottom, 1.0]]
-    })
     .bindSheet(this.sheet !== SHEET_NONE, this.SheetBody(), {
       height: this.sheet === SHEET_PREVIEW ? '70%' : this.sheet === SHEET_FINDING ? '62%' : '60%',
       dragBar: true,

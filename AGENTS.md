@@ -20,9 +20,10 @@ only when the user asks.
 
 - `harmony-app/entry/src/main/ets/pages/Index.ets`: main page. The floating tab
   bar has 普法, 维权 (梳理 · 卷宗 · 证据 pages) and 合同; 我的 (settings) is the
-  round HdsTabs mini bar beside it and opens as a cover. Index keeps the header,
-  tabs, the one sheet host (citation, checklist, cases), routing, persistence and
-  sending; the pages are components. Put new self-contained features in
+  round HdsTabs mini bar beside it and opens as a cover. Every section and 我的
+  has its own system title bar (HdsNavigation); Index keeps the tabs, the one
+  sheet host (citation, checklist, cases), routing, persistence and sending;
+  the pages are components. Put new self-contained features in
   `components/` instead of growing it.
 - `harmony-app/entry/src/main/ets/models/`: `AppEnv` (theme, model settings,
   keyboard; provided to components as `@Provide('env')`), `ChatSession` (one
@@ -160,11 +161,16 @@ only when the user asks.
   app is dark and the system light. A point light on a small Button lights it
   up white in dark mode. A child with `width('100%')` plus side margins overflows
   the screen; put the side room on the parent as padding.
-- 普法's title bar is an HdsNavigation (`QuickPage`): its brand header is page
-  content, so the title bar must sit below the status bar
-  (`avoidLayoutSafeArea`). The bar only learns the scroll position from scroll
-  events: after replacing the content (back to the home), scroll the bound
-  scroller to the top or the bar stays in its glass look.
+- Title bars are HdsNavigation over the content (`ignoreLayoutSafeArea` top,
+  `avoidLayoutSafeArea` on the bar), bound to the page scrollers with
+  `bindToScrollable`. The content runs under the bar: pages without 普法's
+  brand header pad their top by status bar (read from the window) + title row
+  (56) + any bottom area (维权's page switch, the contract filters). The bar
+  only learns the scroll position from scroll events: after replacing the
+  content (back to the home), scroll the bound scroller to the top or the bar
+  stays in its glass look. Its visibility follows the page's immersive state
+  (a tap), never scrolling. ArkTS rejects a ternary between two untyped object
+  literals here; build `backIcon` / `bottomBuilder` options in typed helpers.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.

@@ -1,3 +1,4 @@
+import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { AppEnv } from '../models/AppEnv';
 import { DAILY_LIMIT, ModelQuota } from '../services/ModelQuota';
 import { ChatIcon } from './chat/ChatViews';
@@ -15,6 +16,8 @@ import {
 // appearance. Saving and clearing go back to the page through MineActions.
 
 const CONTENT_BOTTOM: number = 128;
+// HdsNavigation's title row in MINI mode.
+const TITLE_ROW_HEIGHT: number = 56;
 
 export class MineActions {
   close: () => void = () => {
@@ -50,6 +53,9 @@ export struct MinePage {
   // A reply or report is being generated, so records cannot be cleared.
   @Prop busy: boolean = false;
   actions: MineActions = new MineActions();
+  // In vp; the title bar sits below it.
+  @Prop statusBarHeight: number = 40;
+  private scroller: Scroller = new Scroller();
   private baseUrlController: TextInputController = new TextInputController();
   private modelNameController: TextInputController = new TextInputController();
   private apiKeyController: TextInputController = new TextInputController();
@@ -265,7 +271,7 @@ export struct MinePage {
 
   @Builder
   private Settings() {
-    Scroll() {
+    Scroll(this.scroller) {
       Column({ space: 14 }) {
         Column({ space: 14 }) {
           this.SettingCardHeader($r('app.media.ic_gear'), '模型服务')
@@ -474,7 +480,7 @@ export struct MinePage {
         .borderRadius(16)
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 14, bottom: CONTENT_BOTTOM })
+      .padding({ left: 16, right: 16, top: 14 + this.statusBarHeight + TITLE_ROW_HEIGHT, bottom: CONTENT_BOTTOM })
     }
     .scrollBar(BarState.Off)
     .width('100%')
@@ -483,37 +489,57 @@ export struct MinePage {
   }
 
   // 我的: settings, opened from the round button beside the tab bar.
+  // Under a system title bar like the sections: back, then 我的.
   build() {
-    Column() {
-      Row({ space: 12 }) {
-        Text('‹')
-          .fontSize(24)
-          .fontColor(this.env.cx.gold)
-          .textAlign(TextAlign.Center)
-          .width(40)
-          .height(40)
-          .backgroundColor(this.env.cx.tint)
-          .borderRadius(20)
-          .accessibilityText('返回')
-          .onClick(() => {
-            this.actions.close();
-          })
-        Column({ space: 3 }) {
-          Text('我的').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.env.cx.text)
-          Text('模型服务、外观与本机数据').fontSize(11.5).fontColor(this.env.cx.muted)
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
+    HdsNavigation() {
+      Column() {
+        this.Settings()
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 52, bottom: 4 })
-      this.Settings()
+      .height('100%')
+      .linearGradient({
+        angle: 180,
+        colors: [[this.env.cx.bgTop, 0.0], [this.env.cx.bgBottom, 1.0]]
+      })
     }
-    .width('100%')
-    .height('100%')
-    .linearGradient({
-      angle: 180,
-      colors: [[this.env.cx.bgTop, 0.0], [this.env.cx.bgBottom, 1.0]]
+    .titleBar({
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: Material.hdsType(),
+          materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
+        },
+        originalStyle: {
+          contentStyle: {
+            titleStyle: { mainTitleColor: this.env.cx.text, subTitleColor: this.env.cx.muted },
+            backIconStyle: { iconColor: this.env.cx.gold }
+          }
+        },
+        scrollEffectStyle: {
+          contentStyle: {
+            titleStyle: { mainTitleColor: this.env.cx.text, subTitleColor: this.env.cx.muted },
+            backIconStyle: { iconColor: this.env.cx.gold }
+          }
+        }
+      },
+      content: {
+        title: { mainTitle: '我的', subTitle: '模型服务、外观与本机数据' },
+        backIcon: {
+          label: '返回',
+          action: () => {
+            this.actions.close();
+          }
+        }
+      },
+      avoidLayoutSafeArea: true
     })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
+    .mode(NavigationMode.Stack)
+    .bindToScrollable([this.scroller])
   }
 }

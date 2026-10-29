@@ -22,8 +22,6 @@ export class DossierActions {
   };
   openSettings: () => void = () => {
   };
-  scrolled: (scroller: Scroller) => void = (scroller: Scroller) => {
-  };
 }
 
 export interface RingParams {
@@ -60,6 +58,8 @@ export struct DossierPage {
   @Prop floatActive: boolean = false;
   @Prop floatBusy: boolean = false;
   @Prop floatError: string = '';
+  // Room at the top for the title bar floating over the page.
+  @Prop topInset: number = 0;
   caseFields: CaseFieldInfo[] = [];
   // The page's, so it can end editing before sending the report.
   fieldControllers: TextInputController[] = [];
@@ -368,14 +368,11 @@ export struct DossierPage {
           .width('100%')
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 14, bottom: CONTENT_BOTTOM })
+      .padding({ left: 16, right: 16, top: 14 + this.topInset, bottom: CONTENT_BOTTOM })
     }
     .scrollBar(BarState.Off)
     .width('100%')
     .height('100%')
     .edgeEffect(EdgeEffect.Spring)
-    .onDidScroll(() => {
-      this.actions.scrolled(this.scroller);
-    })
   }
 }

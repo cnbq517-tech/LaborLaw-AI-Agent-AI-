@@ -97,6 +97,8 @@ export struct EvidenceLibrary {
   @Prop initialQuery: string = '';
   @Prop initialCategory: string = '';
   @Prop initialImport: boolean = false;
+  // The list's scroller, from the page, so its title bar can follow it.
+  listScroller: Scroller = new Scroller();
   @State categoryFilter: string = '';
   @State items: EvidenceItem[] = [];
   @State selectedId: string = '';
@@ -914,7 +916,7 @@ export struct EvidenceLibrary {
       if (this.query.trim().length > 0) {
         this.ResultsView()
       } else {
-        Scroll() {
+        Scroll(this.listScroller) {
           Column({ space: 12 }) {
             if (this.importing) {
               Row({ space: 8 }) {
@@ -1077,7 +1079,7 @@ export struct EvidenceLibrary {
 
   @Builder
   private ResultsView() {
-    Scroll() {
+    Scroll(this.listScroller) {
       Column({ space: 10 }) {
         Row({ space: 8 }) {
           Text(this.results.length > 0 ? '找到 ' + this.results.length.toString() + ' 份 · 文字 '
