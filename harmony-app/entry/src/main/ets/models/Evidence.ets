@@ -19,6 +19,10 @@ export const INDEX_SKIPPED: string = 'skipped';
 
 export const EVIDENCE_SOURCE_SCAN: string = 'scan';
 export const EVIDENCE_SOURCE_PHOTO: string = 'photo';
+// Sent from a phone by 碰一碰.
+export const EVIDENCE_SOURCE_PHONE: string = 'phone';
+// Shared into the app from another app (the gallery after 华为分享, chat apps).
+export const EVIDENCE_SOURCE_SHARED: string = 'shared';
 
 // A dossier value found in an evidence image; `field` is the dossier input
 // index (0 地点, 1 单位, 2 月薪, 3 时间节点).

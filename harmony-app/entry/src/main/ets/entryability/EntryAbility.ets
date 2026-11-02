@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { KnockShare } from '../services/KnockShare';
 
 const DOMAIN = 0x0000;
 // On a tablet everything is drawn this much larger than the system's display
@@ -11,6 +12,7 @@ const TABLET_SCALE: number = 1.12;
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.applyCardLaunch(want);
+    this.applySharedImages(want);
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {
@@ -25,6 +27,7 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.applyCardLaunch(want);
+    this.applySharedImages(want);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -94,6 +97,21 @@ export default class EntryAbility extends UIAbility {
     } catch (error) {
       hilog.error(DOMAIN, 'window', 'Failed to obtain main window. Cause: %{public}s', JSON.stringify(error));
     }
+  }
+
+  // Images shared into the app (from the gallery after 华为分享, or a chat
+  // app) go to the evidence library; Index picks them up from AppStorage.
+  private applySharedImages(want: Want): void {
+    if (want.action !== 'ohos.want.action.sendData') {
+      return;
+    }
+    KnockShare.sharedUris(want).then((uris: string[]) => {
+      AppStorage.setOrCreate('sharedEvidence', uris);
+      const sequence: number = AppStorage.get<number>('sharedEvidenceSequence') ?? 0;
+      AppStorage.setOrCreate('sharedEvidenceSequence', sequence + 1);
+    }).catch((error: Error) => {
+      hilog.error(DOMAIN, 'share', 'Reading shared images failed: %{public}s', JSON.stringify(error));
+    });
   }
 
   private applyCardLaunch(want: Want): void {

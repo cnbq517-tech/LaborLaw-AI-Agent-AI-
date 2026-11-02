@@ -40,6 +40,10 @@ only when the user asks.
 - `harmony-app/entry/src/main/ets/components/BrandBar.ets`: the blue band
   (gradient and scale watermark) behind a title bar at the top of a page, and
   `SCROLLED_PAST`, how far a page scrolls before its bar turns to glass.
+- `harmony-app/entry/src/main/ets/services/KnockShare.ets`: evidence between
+  devices. 碰一碰 (Share Kit `knockShare` on the phone's evidence library,
+  `dataReceive` sandbox receive on a tablet), the system share panel for
+  华为分享, and reading images shared into the app.
 - `harmony-app/entry/src/main/ets/components/ContractReview.ets`: 合同体检
   (import, facts, report, clause view), embedded as the 合同 section.
 - `harmony-app/entry/src/main/ets/components/EvidenceLibrary.ets`: 证据库
@@ -153,6 +157,15 @@ only when the user asks.
   child component did nothing on the test device.
 - After a page or cover transition the first injected tap is often lost; tap
   again before concluding that a control does not work.
+- Evidence moves between devices two ways. 碰一碰 (phone knocks a tablet)
+  only works on device pairs the system supports; the test MatePad (MRO-W00)
+  does not, in any app, though both sides register fine. 华为分享 works
+  everywhere: the phone sends through the share panel, the tablet's gallery
+  receives it, and the app is a share target for images (`sendData` skill
+  with `general.image` in module.json5), so 分享 → 本应用 stores them in the
+  evidence library. EntryAbility puts shared URIs in AppStorage
+  (`sharedEvidence`); Index routes them, and items from 碰一碰 or a share are
+  marked 来自手机 / 分享存入. Plain 华为分享 never reaches `dataReceive`.
 - With several devices connected, pass `hdc -t <id>`. Debug signing is manual
   (AppGallery Connect certificate and a profile listing each device's UDID,
   `hdc shell bm get --udid`); add a device by adding it to the profile and

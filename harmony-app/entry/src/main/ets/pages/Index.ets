@@ -47,7 +47,7 @@ import {
   ContractReview
 } from '../components/ContractReview';
 import { EVIDENCE_MODE_LIST, EvidenceLibrary } from '../components/EvidenceLibrary';
-import { EvidenceItem } from '../models/Evidence';
+import { EVIDENCE_SOURCE_PHONE, EVIDENCE_SOURCE_SHARED, EvidenceItem } from '../models/Evidence';
 import { ChecklistItem, EvidenceExtractor } from '../services/EvidenceExtractor';
 import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
 import { EvidenceIndex } from '../services/EvidenceIndex';
@@ -58,7 +58,9 @@ import { MineActions, MinePage } from '../components/MinePage';
 import { DrawerActions, HistoryDrawer } from '../components/HistoryDrawer';
 import { Conversation, ConversationEvents } from '../components/chat/Conversation';
 import { DossierActions, DossierPage, ProgressRing } from '../components/DossierPage';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { DrawerState } from '../models/DrawerState';
+import { KnockReceiver, KnockShare } from '../services/KnockShare';
 import { LIGHT_ADAPTIVE, Material } from '../theme/Material';
 import {
   AnswerActionsView,
@@ -143,6 +145,10 @@ struct Index {
   @Watch('onCardScenarioChanged')
   cardScenarioSequence: number = 0;
   @StorageLink('checklistFloatActive') checklistFloatActive: boolean = false;
+  // Images shared into the app (EntryAbility puts them here).
+  @StorageLink('sharedEvidenceSequence')
+  @Watch('onSharedEvidence')
+  sharedEvidenceSequence: number = 0;
   @State @Watch('syncStatusBar') currentSection: AppSection = AppSection.QUICK;
   @Provide('env') env: AppEnv = new AppEnv();
   @State @Watch('applyReading') quick: ChatSession = new ChatSession();
@@ -171,6 +177,18 @@ struct Index {
   @State quickHistory: QuickSession[] = [];
   // The 卷宗 page has scrolled under the title bar.
   @State @Watch('syncStatusBar') dossierScrolled: boolean = false;
+  // 碰一碰 on a tablet: where a phone tapped (vp), what is happening, and the
+  // images it sent for the evidence library to add.
+  @State knockShown: boolean = false;
+  @State knockX: number = 0;
+  @State knockY: number = 0;
+  @State knockPulse: boolean = false;
+  @State knockNote: string = '';
+  @State incomingUris: string[] = [];
+  @State incomingSource: string = EVIDENCE_SOURCE_PHONE;
+  @State incomingSeq: number = 0;
+  private incomingClaimed: number = 0;
+  private knockTimer: number = -1;
   // 合同 and 我的 have scrolled under their title bars.
   @State @Watch('syncStatusBar') contractScrolled: boolean = false;
   @State @Watch('syncStatusBar') mineScrolled: boolean = false;
@@ -277,6 +295,10 @@ struct Index {
     ContractReviewService.load(this.abilityContext()).then((reports: ContractReport[]) => {
       this.contractReportCount = reports.length;
     });
+    // Opened by sharing images into the app: take them once the page is up.
+    setTimeout(() => {
+      this.onSharedEvidence();
+    }, 0);
   }
 
   aboutToDisappear(): void {
@@ -288,6 +310,7 @@ struct Index {
       this.persistTimer = -1;
       this.persistNow();
     }
+    KnockShare.stopReceiving();
     if (this.mainWindow !== undefined) {
       this.mainWindow.off('keyboardHeightChange', this.keyboardHeightCallback);
       this.mainWindow = undefined;
@@ -433,6 +456,9 @@ struct Index {
       this.mainWindow = mainWindow;
       mainWindow.on('keyboardHeightChange', this.keyboardHeightCallback);
       this.env.windowWidth = this.getUIContext().px2vp(mainWindow.getWindowProperties().windowRect.width);
+      if (deviceInfo.deviceType === 'tablet') {
+        this.startKnockReceiving(mainWindow);
+      }
       mainWindow.on('windowSizeChange', (size: window.Size) => {
         this.env.windowWidth = this.getUIContext().px2vp(size.width);
       });
@@ -1291,6 +1317,126 @@ struct Index {
 
   private badgeIconColor(): ResourceColor {
     return this.env.isDark ? this.env.cx.onBrand : this.env.cx.brand;
+  }
+
+  // Tablet: a phone tapped on the screen sends evidence images into the
+  // library. A ripple marks the spot; the library adds them and recognizes
+  // them on this device.
+  private startKnockReceiving(mainWindow: window.Window): void {
+    const receiver: KnockReceiver = new KnockReceiver();
+    receiver.onKnock = (screenX: number, screenY: number) => {
+      const rect: window.Rect = mainWindow.getWindowProperties().windowRect;
+      this.knockX = this.getUIContext().px2vp(screenX - rect.left);
+      this.knockY = this.getUIContext().px2vp(screenY - rect.top);
+      this.showKnock('正在从手机接收材料…', false);
+    };
+    receiver.onReceived = (uris: string[]) => {
+      if (uris.length === 0) {
+        this.showKnock('没有收到可用的图片', true);
+        return;
+      }
+      this.receiveEvidence(uris, EVIDENCE_SOURCE_PHONE);
+      this.showKnock('已收到 ' + uris.length.toString() + ' 份材料，正在存入证据库', false);
+    };
+    receiver.onFailed = () => {
+      this.showKnock('接收没有完成，请在手机上再碰一次', true);
+    };
+    KnockShare.startReceiving(this.abilityContext(), mainWindow.getWindowProperties().id, receiver);
+  }
+
+  // Images from a phone or another app: 维权 · 证据 opens and adds them.
+  private receiveEvidence(uris: string[], source: string): void {
+    this.incomingUris = uris;
+    this.incomingSource = source;
+    this.incomingSeq += 1;
+    this.mineOpen = false;
+    this.sheetKind = 0;
+    this.evidenceMode = EVIDENCE_MODE_LIST;
+    this.currentSection = AppSection.CASE;
+    this.showRights(RIGHTS_EVIDENCE);
+  }
+
+  // Images shared into the app, e.g. from the gallery after 华为分享.
+  private onSharedEvidence(): void {
+    const uris: string[] = AppStorage.get<string[]>('sharedEvidence') ?? [];
+    if (uris.length === 0) {
+      return;
+    }
+    AppStorage.setOrCreate('sharedEvidence', []);
+    this.receiveEvidence(uris, EVIDENCE_SOURCE_SHARED);
+    this.knockX = -200;
+    this.knockY = -200;
+    this.showKnock('正在存入 ' + uris.length.toString() + ' 份分享的材料…', false);
+  }
+
+  // The ripple and the note at the bottom; done notes fade after a while.
+  private showKnock(note: string, done: boolean): void {
+    this.knockNote = note;
+    if (!this.knockShown) {
+      this.knockPulse = false;
+      this.knockShown = true;
+      this.getUIContext().animateTo({
+        duration: this.env.reduceMotion ? 0 : 900,
+        curve: Curve.EaseOut,
+        iterations: this.env.reduceMotion ? 1 : 3
+      }, () => {
+        this.knockPulse = true;
+      });
+    }
+    if (this.knockTimer !== -1) {
+      clearTimeout(this.knockTimer);
+      this.knockTimer = -1;
+    }
+    if (done) {
+      this.knockTimer = setTimeout(() => {
+        this.knockShown = false;
+        this.knockTimer = -1;
+      }, 3200);
+    }
+  }
+
+  @Builder
+  private KnockOverlay() {
+    Stack({ alignContent: Alignment.Bottom }) {
+      Stack() {
+        Circle()
+          .width(120)
+          .height(120)
+          .fill(Color.Transparent)
+          .stroke(this.env.cx.gold)
+          .strokeWidth(3)
+          .scale({ x: this.knockPulse ? 1 : 0.3, y: this.knockPulse ? 1 : 0.3 })
+          .opacity(this.knockPulse ? 0 : 0.8)
+        Circle()
+          .width(28)
+          .height(28)
+          .fill(this.env.cx.gold)
+          .opacity(0.5)
+      }
+      .width(120)
+      .height(120)
+      .position({ x: this.knockX - 60, y: this.knockY - 60 })
+      Row({ space: 8 }) {
+        if (this.knockNote.startsWith('正在')) {
+          LoadingProgress()
+            .width(18)
+            .height(18)
+            .color(this.env.cx.gold)
+        }
+        Text(this.knockNote)
+          .fontSize(13)
+          .fontColor(this.env.cx.text)
+      }
+      .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+      .backgroundColor(this.env.cx.surface)
+      .borderRadius(999)
+      .border({ width: 1, color: this.env.cx.line })
+      .shadow({ radius: 12, color: this.env.cx.softShadow, offsetY: 3 })
+      .margin({ bottom: TAB_BAR_CLEARANCE + 12 })
+    }
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.Transparent)
   }
 
   private openEvidence(query: string, category: string, importNow: boolean): void {
@@ -2445,6 +2591,22 @@ struct Index {
       initialQuery: this.evidenceQuery,
       initialCategory: this.evidenceCategory,
       initialImport: this.evidenceImport,
+      incomingUris: this.incomingUris,
+      incomingSource: this.incomingSource,
+      incomingSeq: this.incomingSeq,
+      claimIncoming: (seq: number): boolean => {
+        if (seq === this.incomingClaimed) {
+          return false;
+        }
+        this.incomingClaimed = seq;
+        return true;
+      },
+      onIncomingDone: (count: number) => {
+        this.incomingUris = [];
+        KnockShare.clearInbox(this.abilityContext());
+        this.showKnock((this.incomingSource === EVIDENCE_SOURCE_PHONE ? '已从手机收到 ' : '已存入 ') +
+          count.toString() + ' 份材料，正在本机识别', true);
+      },
       listScroller: this.evidenceScroller
     })
     .padding({ top: this.env.split() ? 0 : this.rightsTopInset() })
@@ -3494,6 +3656,9 @@ struct Index {
         }
       })
 
+      if (this.knockShown) {
+        this.KnockOverlay()
+      }
       if (this.drawer.visible && !this.env.split()) {
         HistoryDrawer({
           drawer: this.drawer,

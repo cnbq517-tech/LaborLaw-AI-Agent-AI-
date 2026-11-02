@@ -1,4 +1,6 @@
 import { common } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { DocType, DocumentScanner, DocumentScannerConfig, FilterId, SaveOption } from '@kit.VisionKit';
@@ -11,7 +13,9 @@ import {
   EVIDENCE_INDEXING,
   EVIDENCE_PENDING,
   EVIDENCE_RECOGNIZING,
+  EVIDENCE_SOURCE_PHONE,
   EVIDENCE_SOURCE_PHOTO,
+  EVIDENCE_SOURCE_SHARED,
   EVIDENCE_SOURCE_SCAN,
   EvidenceItem,
   ExtractedField,
@@ -25,6 +29,7 @@ import { EvidencePipeline } from '../services/EvidencePipeline';
 import { CAT_CHAT, CAT_OTHER, EVIDENCE_CATEGORIES, EvidenceExtractor } from '../services/EvidenceExtractor';
 import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
 import { EvidenceStore } from '../services/EvidenceStore';
+import { KNOCK_MAX, KnockSender, KnockShare } from '../services/KnockShare';
 import { ThemeColors } from '../theme/Theme';
 import { Material } from '../theme/Material';
 
@@ -101,6 +106,17 @@ export struct EvidenceLibrary {
   @Prop initialQuery: string = '';
   @Prop initialCategory: string = '';
   @Prop initialImport: boolean = false;
+  // Images a phone sent by 碰一碰 (tablet), to add; a new sequence number
+  // brings a new batch.
+  @Prop incomingUris: string[] = [];
+  // How they came: 碰一碰 from a phone, or shared into the app.
+  @Prop incomingSource: string = EVIDENCE_SOURCE_PHONE;
+  @Prop @Watch('takeIncoming') incomingSeq: number = 0;
+  onIncomingDone: (count: number) => void = (count: number) => {
+  };
+  // Only one library takes a batch: the page may show it while the old one
+  // is still going away.
+  claimIncoming: (seq: number) => boolean = (seq: number) => true;
   // The list's scroller, from the page, so its title bar can follow it.
   listScroller: Scroller = new Scroller();
   @State categoryFilter: string = '';
@@ -116,6 +132,10 @@ export struct EvidenceLibrary {
   @State query: string = '';
   @State results: SearchResult[] = [];
   @State searching: boolean = false;
+  // Phone: choosing several items to send to a tablet by 碰一碰.
+  @State picking: boolean = false;
+  @State picked: string[] = [];
+  private takenSeq: number = 0;
   private searchTimer: number = -1;
   private searchSequence: number = 0;
   private rebuilding: boolean = false;
@@ -135,6 +155,93 @@ export struct EvidenceLibrary {
       if (this.initialQuery.length > 0) {
         this.setQuery(this.initialQuery);
       }
+      this.takeIncoming();
+    });
+    if (deviceInfo.deviceType === 'phone') {
+      this.startSending();
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (deviceInfo.deviceType === 'phone') {
+      KnockShare.stopSending();
+    }
+  }
+
+  // Phone: while the library is on screen, tapping a tablet sends the item
+  // shown, or the items chosen in the list.
+  private async startSending(): Promise<void> {
+    const sender: KnockSender = new KnockSender();
+    sender.files = () => this.filesToSend();
+    sender.onEmpty = () => {
+      this.notice = this.mode === EVIDENCE_MODE_LIST ? '长按材料可以多选，选好后再碰一碰平板' : '先选中要发送的材料';
+    };
+    sender.onSent = (count: number) => {
+      this.notice = '已发送 ' + count.toString() + ' 份材料到平板';
+      this.picking = false;
+      this.picked = [];
+    };
+    sender.onFailed = () => {
+      this.notice = '发送没有完成，请再碰一次';
+    };
+    try {
+      const win: window.Window = await window.getLastWindow(this.context());
+      KnockShare.startSending(win.getWindowProperties().id, sender);
+    } catch (error) {
+      // Without the window there is no 碰一碰; the library works as before.
+    }
+  }
+
+  private filesToSend(): string[] {
+    if (this.mode === EVIDENCE_MODE_DETAIL && this.selected() !== undefined) {
+      return [EvidenceStore.imagePath(this.context(), this.selected()!)];
+    }
+    if (this.mode === EVIDENCE_MODE_LIST && this.picking) {
+      return this.items.filter((item: EvidenceItem) => this.picked.includes(item.id))
+        .map((item: EvidenceItem) => EvidenceStore.imagePath(this.context(), item));
+    }
+    return [];
+  }
+
+  // 华为分享 (and any other app) through the system share panel, for devices
+  // without 碰一碰 between them.
+  private async sharePicked(): Promise<void> {
+    const paths: string[] = this.filesToSend();
+    if (paths.length === 0) {
+      this.notice = '先选中要发送的材料';
+      return;
+    }
+    try {
+      await KnockShare.showSharePanel(this.context(), paths);
+    } catch (error) {
+      this.notice = '没有打开分享面板，请重试';
+    }
+  }
+
+  private togglePicked(item: EvidenceItem): void {
+    if (this.picked.includes(item.id)) {
+      this.picked = this.picked.filter((id: string) => id !== item.id);
+    } else if (this.picked.length < KNOCK_MAX) {
+      this.picked = this.picked.concat([item.id]);
+    } else {
+      this.notice = '一次最多发送 ' + KNOCK_MAX.toString() + ' 份';
+    }
+  }
+
+  // Tablet: adds what a phone sent, once the list has loaded.
+  takeIncoming(): void {
+    if (!this.loaded || this.incomingSeq === this.takenSeq || this.incomingUris.length === 0) {
+      return;
+    }
+    this.takenSeq = this.incomingSeq;
+    if (!this.claimIncoming(this.incomingSeq)) {
+      return;
+    }
+    const count: number = this.incomingUris.length;
+    this.mode = EVIDENCE_MODE_LIST;
+    this.categoryFilter = '';
+    this.addFromUris(this.incomingUris, this.incomingSource).then(() => {
+      this.onIncomingDone(count);
     });
   }
 
@@ -757,6 +864,45 @@ export struct EvidenceLibrary {
     .padding({ left: this.side, right: this.side, top: this.embedded ? 4 : 52, bottom: 12 })
   }
 
+  // Tablet: photos a phone just sent by 华为分享 are at the front of the
+  // album, so this opens the picker with a note on how to send them.
+  @Builder
+  private FromPhoneOption() {
+    Row({ space: 12 }) {
+      Text('⇄')
+        .fontSize(18)
+        .fontColor(this.cx.gold)
+        .textAlign(TextAlign.Center)
+        .width(40)
+        .height(40)
+        .backgroundColor(this.chipGold())
+        .borderRadius(12)
+      Column({ space: 3 }) {
+        Text('从手机导入')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.cx.text)
+        Text('在手机证据库选中材料点「华为分享」发到这台平板，再在这里选刚收到的照片')
+          .fontSize(11.5)
+          .lineHeight(16)
+          .fontColor(this.cx.muted)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text('›')
+        .fontSize(18)
+        .fontColor(this.cx.faint)
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(this.cx.surface)
+    .borderRadius(16)
+    .border({ width: 1, color: this.cx.line })
+    .onClick(() => {
+      this.pickPhotos();
+    })
+  }
+
   @Builder
   private ImportOption(title: string, subtitle: string, isScan: boolean) {
     Row({ space: 12 }) {
@@ -809,6 +955,9 @@ export struct EvidenceLibrary {
         .fontWeight(FontWeight.Bold)
         .fontColor(this.cx.text)
         .width('100%')
+      if (deviceInfo.deviceType === 'tablet') {
+        this.FromPhoneOption()
+      }
       this.ImportOption('扫描纸质材料', '劳动合同、工资条、解除通知书，自动矫正', true)
       this.ImportOption('从相册选择', '聊天截图、考勤截图，一次最多 9 张', false)
       Text('图片只保存在本机，文字识别在手机上完成，不会上传。')
@@ -859,13 +1008,28 @@ export struct EvidenceLibrary {
   @Builder
   private EvidenceCard(item: EvidenceItem) {
     Column() {
-      Image(this.imageUri(item))
-        .width('100%')
-        .height(132)
-        .objectFit(ImageFit.Cover)
-        .backgroundColor(this.cx.surface2)
-        .borderRadius({ topLeft: 14, topRight: 14 })
-        .draggable(false)
+      Stack({ alignContent: Alignment.TopEnd }) {
+        Image(this.imageUri(item))
+          .width('100%')
+          .height(132)
+          .objectFit(ImageFit.Cover)
+          .backgroundColor(this.cx.surface2)
+          .borderRadius({ topLeft: 14, topRight: 14 })
+          .draggable(false)
+        if (this.picking) {
+          Text(this.picked.includes(item.id) ? '✓' : '')
+            .fontSize(13)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.White)
+            .textAlign(TextAlign.Center)
+            .width(24)
+            .height(24)
+            .borderRadius(12)
+            .backgroundColor(this.picked.includes(item.id) ? this.cx.brand : '#66000000')
+            .border({ width: 1.5, color: Color.White })
+            .margin(8)
+        }
+      }
       Column({ space: 6 }) {
         Text(item.title)
           .fontSize(13)
@@ -882,6 +1046,15 @@ export struct EvidenceLibrary {
               .fontColor(item.category === CAT_OTHER ? this.cx.muted : this.cx.gold)
               .padding({ left: 7, right: 7, top: 2, bottom: 2 })
               .backgroundColor(item.category === CAT_OTHER ? this.cx.tint : this.chipGold())
+              .borderRadius(999)
+          }
+          if (item.source === EVIDENCE_SOURCE_PHONE || item.source === EVIDENCE_SOURCE_SHARED) {
+            Text(item.source === EVIDENCE_SOURCE_PHONE ? '来自手机' : '分享存入')
+              .fontSize(10)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.cx.brand)
+              .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+              .backgroundColor(this.cx.tint)
               .borderRadius(999)
           }
           Text(this.statusLabel(item))
@@ -904,11 +1077,105 @@ export struct EvidenceLibrary {
     }
     .backgroundColor(this.cx.surface)
     .borderRadius(14)
-    .border({ width: 1, color: this.cx.line })
+    .border({ width: this.picking && this.picked.includes(item.id) ? 2 : 1,
+      color: this.picking && this.picked.includes(item.id) ? this.cx.brand : this.cx.line })
     .clip(true)
     .onClick(() => {
-      this.openDetail(item);
+      if (this.picking) {
+        this.togglePicked(item);
+      } else {
+        this.openDetail(item);
+      }
     })
+    // Phone: a long press starts choosing items to send to a tablet.
+    .gesture(LongPressGesture().onAction(() => {
+      if (deviceInfo.deviceType === 'phone' && !this.picking) {
+        this.picking = true;
+        this.picked = [item.id];
+      }
+    }))
+  }
+
+  // Phone, while choosing: how many, and how to send them.
+  @Builder
+  private PickBar() {
+    Row({ space: 10 }) {
+      Text('⇄')
+        .fontSize(18)
+        .fontColor(this.cx.onBrand)
+      Column({ space: 2 }) {
+        Text(this.picked.length > 0 ? '已选 ' + this.picked.length.toString() + ' 份' : '点选要发送的材料')
+          .fontSize(13.5)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.cx.onBrand)
+        Text('或用手机顶部轻碰平板 · 不经过云端')
+          .fontSize(10.5)
+          .fontColor(this.cx.headerSub)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text('华为分享')
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.cx.brand)
+        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+        .backgroundColor(this.cx.onBrand)
+        .borderRadius(999)
+        .opacity(this.picked.length > 0 ? 1 : 0.5)
+        .onClick(() => {
+          this.sharePicked();
+        })
+      Text('取消')
+        .fontSize(13)
+        .fontColor(this.cx.onBrand)
+        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+        .backgroundColor('#33FFFFFF')
+        .borderRadius(999)
+        .onClick(() => {
+          this.picking = false;
+          this.picked = [];
+        })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 10, top: 10, bottom: 10 })
+    .backgroundColor(this.cx.brand)
+    .borderRadius(18)
+    .margin({ left: this.side, right: this.side, bottom: 8 + this.bottomInset })
+  }
+
+  // Phone, on an item: it can go to a tablet with a tap.
+  @Builder
+  private KnockHint() {
+    Row({ space: 10 }) {
+      Text('⇄')
+        .fontSize(16)
+        .fontColor(this.cx.brand)
+      Column({ space: 2 }) {
+        Text('发送到平板')
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.cx.text)
+        Text('华为分享，或用手机顶部轻碰平板 · 不经过云端')
+          .fontSize(10.5)
+          .fontColor(this.cx.muted)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text('华为分享')
+        .fontSize(12.5)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.cx.onBrand)
+        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+        .backgroundColor(this.cx.brand)
+        .borderRadius(999)
+        .onClick(() => {
+          this.sharePicked();
+        })
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor(this.cx.tint)
+    .borderRadius(14)
   }
 
   @Builder
@@ -953,6 +1220,9 @@ export struct EvidenceLibrary {
         .align(Alignment.Top)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring)
+        if (this.picking) {
+          this.PickBar()
+        }
       }
     }
   }
@@ -1224,6 +1494,9 @@ export struct EvidenceLibrary {
     if (this.selected() !== undefined) {
       Scroll() {
         Column({ space: 14 }) {
+          if (deviceInfo.deviceType === 'phone') {
+            this.KnockHint()
+          }
           if (this.hasEnhanced(this.selected()!)) {
             this.CompareView(this.selected()!)
           } else {
