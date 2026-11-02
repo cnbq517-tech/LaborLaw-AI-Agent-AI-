@@ -1,8 +1,12 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 
 const DOMAIN = 0x0000;
+// On a tablet everything is drawn this much larger than the system's display
+// size, so text and controls read at arm's length on the big screen.
+const TABLET_SCALE: number = 1.12;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -27,6 +31,7 @@ export default class EntryAbility extends UIAbility {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
     this.configureImmersiveWindow(windowStage);
+    this.scaleForTablet(windowStage);
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
@@ -50,6 +55,22 @@ export default class EntryAbility extends UIAbility {
   onBackground(): void {
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+  }
+
+  // Follows the user's display size setting, one step larger.
+  private scaleForTablet(windowStage: window.WindowStage): void {
+    if (deviceInfo.deviceType !== 'tablet') {
+      return;
+    }
+    try {
+      const mainWindow: window.Window = windowStage.getMainWindowSync();
+      windowStage.setCustomDensity(mainWindow.getWindowDensityInfo().systemDensity * TABLET_SCALE);
+      mainWindow.on('systemDensityChange', (density: number) => {
+        windowStage.setCustomDensity(density * TABLET_SCALE);
+      });
+    } catch (error) {
+      hilog.error(DOMAIN, 'window', 'Failed to scale for the tablet. Cause: %{public}s', JSON.stringify(error));
+    }
   }
 
   private configureImmersiveWindow(windowStage: window.WindowStage): void {

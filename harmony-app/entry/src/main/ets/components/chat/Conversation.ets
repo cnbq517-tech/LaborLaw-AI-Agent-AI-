@@ -77,6 +77,9 @@ export struct Conversation {
   @Prop scrollToRead: boolean = true;
   // Room at the top for a title bar floating over the content.
   @Prop topInset: number = 0;
+  // Room on each side when the page sets it (a pane of its own); otherwise
+  // the app's, which centers the content on a tablet.
+  @Prop side: number = -1;
   @BuilderParam lead: () => void = noLead;
   // Ids for measuring where the latest turn sits in the scroll.
   scrollId: string = '';
@@ -155,6 +158,10 @@ export struct Conversation {
   // unfolding on any upward scroll would shrink the page, scroll it, and fold
   // it again. Near the top nothing counts: a fling past the top springs back
   // down, and that rebound would fold the page again just after it unfolded.
+  private padSide(): number {
+    return this.side >= 0 ? this.side : this.env.side();
+  }
+
   private trackReading(delta: number, state: ScrollState): void {
     if (!this.scrollToRead || state === ScrollState.Idle || !this.conversing || this.chat.reading ||
       this.env.keyboardVisible || this.scroller.currentOffset().yOffset < READING_DRAG) {
@@ -226,7 +233,7 @@ export struct Conversation {
           }
         }
         .width('100%')
-        .padding({ left: 16, right: 16, top: 14 + this.topInset,
+        .padding({ left: this.padSide(), right: this.padSide(), top: 14 + this.topInset,
           bottom: !this.conversing ? CONTENT_BOTTOM : this.chat.reading ? READING_BOTTOM : this.chat.pinnedHeight + 12 })
         .onAreaChange((oldValue: Area, newValue: Area) => {
           this.chat.contentHeight = newValue.height as number;
@@ -289,6 +296,7 @@ export struct Conversation {
         })
       } else if (this.conversing && !this.chat.reading) {
         PinnedComposer({
+          side: this.padSide(),
           chat: this.chat,
           forCase: this.forCase,
           placeholder: this.placeholder,

@@ -153,6 +153,12 @@ only when the user asks.
   child component did nothing on the test device.
 - After a page or cover transition the first injected tap is often lost; tap
   again before concluding that a control does not work.
+- With several devices connected, pass `hdc -t <id>`. Debug signing is manual
+  (AppGallery Connect certificate and a profile listing each device's UDID,
+  `hdc shell bm get --udid`); add a device by adding it to the profile and
+  replacing the `.p7b`, so installed copies update without an uninstall. The
+  signing files and passwords stay out of the repo. After a reinstall the
+  phone refuses `hdc file send -b` until the app has been launched once.
 - The system material (`systemMaterial`) only takes effect on the Navigation
   title bar, a bottom TabBar, dialogs and sheets, toasts, Slider and Toggle; on
   any other component it renders transparent. The level is settable only for
@@ -185,6 +191,24 @@ only when the user asks.
 - 普法 and 维权 · 梳理 keep the tab bar and composer while scrolling
   (`scrollToRead: false`); only a tap (immersive reading) hides them. The
   contract report still folds them on scroll.
+- Tablets. `AppEnv.windowWidth` (vp, from the window) drives three things:
+  `side()` centers content in a column of `CONTENT_MAX` (840), `wide()`
+  (from 600) switches tablet details (four scenario cards per row, close
+  buttons, centered sheets), `split()` (from 1000, a tablet held sideways)
+  shows two panes: 普法 history docked left (`HistoryDrawer` `docked`), 维权
+  梳理 with 卷宗 / 证据 beside it, the contract text with its findings beside
+  it. Components that sit in a pane take a `side` override instead of
+  `env.side()`. On a tablet `EntryAbility` draws everything 12% larger with
+  `setCustomDensity` (following the system's display size). Phones are
+  unchanged; check both after layout changes.
+- HdsTabs on a wide window puts the bar at one edge and the mini bar (我的) at
+  the other; equal `barSideMargin`s bring them together in the middle.
+  `adaptToHandedness` pushes the bar to one side, so it is off on tablets.
+- `bindSheet` with `onWillDismiss` closes only through `action.dismiss()`;
+  without it a tablet's centered sheet stays as an empty frame. On a tablet a
+  sheet defaults to a popup by the finger with no mask; use
+  `SheetType.CENTER` with `showClose` there, and `Material.dialog(isDark,
+  true)` so the page does not show through its text.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.

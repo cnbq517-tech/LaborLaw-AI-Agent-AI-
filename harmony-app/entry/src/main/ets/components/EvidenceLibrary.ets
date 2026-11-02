@@ -82,6 +82,10 @@ export struct EvidenceLibrary {
   // button, and content leaves room for the floating tab bar.
   @Prop embedded: boolean = false;
   @Prop bottomInset: number = 0;
+  // Room on each side of the content (wider on a tablet, to center it).
+  @Prop side: number = 16;
+  // A tablet's layout.
+  @Prop wide: boolean = false;
   onClose: () => void = () => {
   };
   onCountChange: (count: number) => void = (count: number) => {
@@ -750,7 +754,7 @@ export struct EvidenceLibrary {
       }
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: this.embedded ? 4 : 52, bottom: 12 })
+    .padding({ left: this.side, right: this.side, top: this.embedded ? 4 : 52, bottom: 12 })
   }
 
   @Builder
@@ -849,7 +853,7 @@ export struct EvidenceLibrary {
       .margin({ top: 8 })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 40 })
+    .padding({ left: this.side, right: this.side, top: 40 })
   }
 
   @Builder
@@ -943,7 +947,7 @@ export struct EvidenceLibrary {
             .width('100%')
           }
           .width('100%')
-          .padding({ left: 16, right: 16, bottom: 40 + this.bottomInset })
+          .padding({ left: this.side, right: this.side, bottom: 40 + this.bottomInset })
         }
         .layoutWeight(1)
         .align(Alignment.Top)
@@ -1074,7 +1078,7 @@ export struct EvidenceLibrary {
       }
     }
     .width('100%')
-    .padding({ left: 16, right: 16, bottom: 12 })
+    .padding({ left: this.side, right: this.side, bottom: 12 })
   }
 
   @Builder
@@ -1114,7 +1118,7 @@ export struct EvidenceLibrary {
         }
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 40 + this.bottomInset })
+      .padding({ left: this.side, right: this.side, bottom: 40 + this.bottomInset })
     }
     .layoutWeight(1)
     .align(Alignment.Top)
@@ -1439,7 +1443,7 @@ export struct EvidenceLibrary {
           .width('100%')
         }
         .width('100%')
-        .padding({ left: 16, right: 16, bottom: 40 + this.bottomInset })
+        .padding({ left: this.side, right: this.side, bottom: 40 + this.bottomInset })
       }
       .layoutWeight(1)
       .align(Alignment.Top)
@@ -1469,7 +1473,7 @@ export struct EvidenceLibrary {
             .fontSize(12)
             .fontColor(this.cx.warn)
             .width('100%')
-            .padding({ left: 16, right: 16, bottom: 8 })
+            .padding({ left: this.side, right: this.side, bottom: 8 })
             .onClick(() => {
               this.notice = '';
             })
@@ -1490,10 +1494,15 @@ export struct EvidenceLibrary {
     .bindSheet(this.importSheet, this.ImportSheet(), {
       height: 330,
       dragBar: true,
-      showClose: false,
+      // On a tablet, a dialog in the middle with a close button and a mask
+      // that closes it (by default it would float by the finger, unmasked).
+      preferType: this.wide ? SheetType.CENTER : undefined,
+      showClose: this.wide,
       maskColor: this.isDark ? '#88040B18' : '#66404A5A',
-      systemMaterial: Material.dialog(this.isDark),
-      onWillDismiss: () => {
+      systemMaterial: Material.dialog(this.isDark, this.wide),
+      onWillDismiss: (action: DismissSheetAction) => {
+        // With this callback the sheet closes only when told to.
+        action.dismiss();
         this.importSheet = false;
       }
     })

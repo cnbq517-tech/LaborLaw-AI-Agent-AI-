@@ -84,6 +84,14 @@ const RIGHTS_EVIDENCE: number = 2;
 const RIGHTS_SEGMENT_HEIGHT: number = 46;
 // HdsNavigation's title row in MINI mode.
 const TITLE_ROW_HEIGHT: number = 56;
+// The floating tab bar on a tablet, 我的 beside it, and the gap between them.
+const TABLET_BAR_WIDTH: number = 400;
+const MINI_BAR_WIDTH: number = 64;
+const TABLET_BAR_GAP: number = 12;
+// 普法's history beside the conversation in two panes, and the conversation's
+// room on each side there.
+const HISTORY_PANE_WIDTH: number = 320;
+const QUICK_SPLIT_SIDE: number = 32;
 const STREAM_QUICK: number = 0;
 const STREAM_CASE: number = 1;
 const STREAM_REPORT: number = 2;
@@ -424,6 +432,10 @@ struct Index {
       const mainWindow: window.Window = await window.getLastWindow(this.abilityContext());
       this.mainWindow = mainWindow;
       mainWindow.on('keyboardHeightChange', this.keyboardHeightCallback);
+      this.env.windowWidth = this.getUIContext().px2vp(mainWindow.getWindowProperties().windowRect.width);
+      mainWindow.on('windowSizeChange', (size: window.Size) => {
+        this.env.windowWidth = this.getUIContext().px2vp(size.width);
+      });
       const top: number = mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height;
       if (top > 0) {
         this.statusBarHeight = this.getUIContext().px2vp(top);
@@ -1308,11 +1320,11 @@ struct Index {
       return;
     }
     this.setTabBarHidden(this.currentSection === AppSection.QUICK ? this.quick.reading :
-      this.rightsTab === RIGHTS_CHAT && this.caseChat.reading);
+      this.chatShown() && this.caseChat.reading);
     // In immersive reading 普法's title bar hides; the status bar goes with it
     // so the time and icons do not sit on the text.
     this.setStatusBarHidden(this.currentSection === AppSection.QUICK ? this.quick.immersive :
-      this.currentSection === AppSection.CASE && this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive);
+      this.currentSection === AppSection.CASE && this.chatShown() && this.caseChat.immersive);
   }
 
   private statusBarHidden: boolean = false;
@@ -1344,6 +1356,10 @@ struct Index {
   }
 
   private showRights(tab: number): void {
+    // In two panes 梳理 is always on screen; the pane keeps its page.
+    if (this.env.split() && tab === RIGHTS_CHAT) {
+      return;
+    }
     this.endReading();
     this.rightsTab = tab;
   }
@@ -1823,9 +1839,9 @@ struct Index {
       barWidth: {
         smallWidth: 268,
         mediumWidth: 330,
-        largeWidth: 330
+        largeWidth: TABLET_BAR_WIDTH
       },
-      barSideMargin: 20,
+      barSideMargin: this.barSideMargin(),
       barBottomMargin: 30,
       // No mask behind the bar: content scrolling under it shows through its
       // glass (沉浸光感). A background-colored mask here hides the material.
@@ -1833,8 +1849,9 @@ struct Index {
         maskColor: t.bgBottom,
         maskHeight: 0
       },
-      // On wide devices the bar follows the hand holding it.
-      adaptToHandedness: true,
+      // On a phone the bar follows the hand holding it; on a tablet it stays
+      // centered, beside 我的.
+      adaptToHandedness: !this.env.wide(),
       lightColor: t.glow,
       systemMaterialEffect: {
         materialType: Material.hdsType(),
@@ -1848,10 +1865,19 @@ struct Index {
         miniBarBuilder: (): void => {
           this.MineButton()
         },
-        miniBarWidth: { smallWidth: 64, mediumWidth: 64, largeWidth: 64 },
+        miniBarWidth: { smallWidth: MINI_BAR_WIDTH, mediumWidth: MINI_BAR_WIDTH, largeWidth: MINI_BAR_WIDTH },
         miniBarStyle: HdsBarStyle.COLLAPSE
       }
     };
+  }
+
+  // On a tablet the bar sits at one edge and 我的 at the other; equal margins
+  // bring the two together in the middle.
+  private barSideMargin(): number {
+    if (!this.env.wide()) {
+      return 20;
+    }
+    return Math.max(20, (this.env.windowWidth - TABLET_BAR_WIDTH - MINI_BAR_WIDTH - TABLET_BAR_GAP) / 2);
   }
 
   // 我的, the round control beside the tab bar (HdsTabs mini bar).
@@ -2398,6 +2424,8 @@ struct Index {
     EvidenceLibrary({
       cx: this.env.cx,
       isDark: this.env.isDark,
+      side: this.env.split() ? 14 : this.env.side(),
+      wide: this.env.wide(),
       mode: $evidenceMode,
       embedded: true,
       bottomInset: this.env.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,
@@ -2419,7 +2447,7 @@ struct Index {
       initialImport: this.evidenceImport,
       listScroller: this.evidenceScroller
     })
-    .padding({ top: this.rightsTopInset() })
+    .padding({ top: this.env.split() ? 0 : this.rightsTopInset() })
   }
 
   @Builder
@@ -2552,47 +2580,35 @@ struct Index {
   private RightsPage() {
     HdsNavigation() {
     Stack({ alignContent: Alignment.Top }) {
-    Column() {
+    Row() {
       // 梳理 and 卷宗 stay alive while hidden, so each keeps its scroll
       // position and the title bar can follow it. 证据 is rebuilt each time:
-      // it reads its starting query when it appears.
+      // it reads its starting query when it appears. In two panes 梳理 is
+      // always on the left and the other page beside it.
       Stack() {
         Column() {
           this.CaseChat()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.rightsTab === RIGHTS_CHAT ? Visibility.Visible : Visibility.None)
-        Column() {
-          DossierPage({
-            caseState: this.caseState,
-            reportRun: this.reportRun,
-            floatActive: this.checklistFloatActive,
-            floatBusy: this.checklistFloatBusy,
-            floatError: this.checklistFloatError,
-            caseFields: this.caseFields,
-            fieldControllers: this.fieldControllers,
-            detailsController: this.detailsController,
-            scroller: this.dossierScroller,
-            actions: this.dossierActions,
-            chatActions: this.chatActions,
-            topInset: this.rightsTopInset(),
-            onScrolled: (scrolled: boolean) => {
-              if (this.dossierScrolled !== scrolled) {
-                this.dossierScrolled = scrolled;
-              }
-            }
-          })
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.rightsTab === RIGHTS_DOSSIER ? Visibility.Visible : Visibility.None)
-        if (this.rightsTab === RIGHTS_EVIDENCE) {
-          this.EvidencePane()
+        .visibility(this.chatShown() ? Visibility.Visible : Visibility.None)
+        if (!this.env.split()) {
+          Column() {
+            this.RightsDossier()
+          }
+          .width('100%')
+          .height('100%')
+          .visibility(this.rightsTab === RIGHTS_DOSSIER ? Visibility.Visible : Visibility.None)
+          if (this.rightsTab === RIGHTS_EVIDENCE) {
+            this.EvidencePane()
+          }
         }
       }
       .layoutWeight(1)
-      .width('100%')
+      .height('100%')
+      if (this.env.split()) {
+        this.RightsPane()
+      }
     }
     .width('100%')
     .height('100%')
@@ -2644,7 +2660,9 @@ struct Index {
           }
         },
         menu: { value: this.rightsMenu() },
-        bottomBuilder: this.rightsScrolled() || (this.rightsTab === RIGHTS_CHAT && this.caseChat.reading) ? undefined : {
+        // In two panes the pane beside 梳理 has its own switch.
+        bottomBuilder: this.env.split() || this.rightsScrolled() || (this.rightsTab === RIGHTS_CHAT && this.caseChat.reading) ?
+          undefined : {
           builder: (): void => {
             this.RightsSegments()
           },
@@ -2658,9 +2676,96 @@ struct Index {
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
     .mode(NavigationMode.Stack)
     // Stays while scrolling; only immersive reading (a tap) hides it.
-    .hideTitleBar(this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive, true)
+    .hideTitleBar(this.chatShown() && this.caseChat.immersive, true)
     // Only the page shown: the bar's glass follows that page's scroll.
     .bindToScrollable(this.rightsScrollers())
+  }
+
+  @Builder
+  private RightsDossier() {
+    DossierPage({
+      caseState: this.caseState,
+      reportRun: this.reportRun,
+      floatActive: this.checklistFloatActive,
+      floatBusy: this.checklistFloatBusy,
+      floatError: this.checklistFloatError,
+      caseFields: this.caseFields,
+      fieldControllers: this.fieldControllers,
+      detailsController: this.detailsController,
+      scroller: this.dossierScroller,
+      actions: this.dossierActions,
+      chatActions: this.chatActions,
+      topInset: this.env.split() ? 0 : this.rightsTopInset(),
+      side: this.env.split() ? 14 : -1,
+      onScrolled: (scrolled: boolean) => {
+        if (this.dossierScrolled !== scrolled) {
+          this.dossierScrolled = scrolled;
+        }
+      }
+    })
+  }
+
+  // Beside 梳理 in two panes: 卷宗 or 证据, switched at its top. The facts
+  // the conversation gathers fill in the dossier as it goes.
+  @Builder
+  private RightsPane() {
+    Column() {
+      Column() {
+        Row() {
+          this.PaneSegment(RIGHTS_DOSSIER)
+          this.PaneSegment(RIGHTS_EVIDENCE)
+        }
+        .padding(3)
+        .backgroundColor(this.env.cx.surface2)
+        .borderRadius(12)
+        .margin({ left: 14, right: 14, top: 12, bottom: 4 })
+        Column() {
+          if (this.paneTab() === RIGHTS_DOSSIER) {
+            this.RightsDossier()
+          } else {
+            this.EvidencePane()
+          }
+        }
+        .width('100%')
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .backgroundColor(this.env.cx.surface)
+      .borderRadius(18)
+      .border({ width: 1, color: this.env.cx.line })
+      .clip(true)
+    }
+    .width('40%')
+    .height('100%')
+    .padding({ top: this.rightsTopInset() + 8, right: 16,
+      bottom: 16 + (this.env.keyboardVisible ? 0 : TAB_BAR_CLEARANCE) })
+  }
+
+  @Builder
+  private PaneSegment(tab: number) {
+    Text(this.rightsLabel(tab))
+      .fontSize(13.5)
+      .fontWeight(this.paneTab() === tab ? FontWeight.Bold : FontWeight.Regular)
+      .fontColor(this.paneTab() === tab ? this.env.cx.text : this.env.cx.muted)
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
+      .height(32)
+      .borderRadius(10)
+      .backgroundColor(this.paneTab() === tab ? this.env.cx.surface : Color.Transparent)
+      .onClick(() => {
+        this.showRights(tab);
+      })
+  }
+
+  // 梳理 is on screen: its own page, or the left pane.
+  private chatShown(): boolean {
+    return this.env.split() || this.rightsTab === RIGHTS_CHAT;
+  }
+
+  // The page beside 梳理 in two panes.
+  private paneTab(): number {
+    return this.rightsTab === RIGHTS_CHAT ? RIGHTS_DOSSIER : this.rightsTab;
   }
 
   @Builder
@@ -2671,14 +2776,15 @@ struct Index {
       lightLevel: this.env.lightLevel,
       reduceMotion: this.env.reduceMotion,
       barHeight: this.statusBarHeight + TITLE_ROW_HEIGHT +
-        (this.rightsTab === RIGHTS_CHAT && this.caseChat.reading ? 0 : RIGHTS_SEGMENT_HEIGHT),
+        (this.env.split() || (this.rightsTab === RIGHTS_CHAT && this.caseChat.reading) ? 0 : RIGHTS_SEGMENT_HEIGHT),
       // At the top of the page only; scrolled, the system's glass is the bar.
-      shown: !this.rightsScrolled() && !(this.rightsTab === RIGHTS_CHAT && this.caseChat.immersive)
+      shown: !this.rightsScrolled() && !(this.chatShown() && this.caseChat.immersive)
     })
   }
 
   private rightsScrollers(): Scroller[] {
-    if (this.rightsTab === RIGHTS_CHAT) {
+    // In two panes the pane beside 梳理 starts below the title bar.
+    if (this.chatShown()) {
       return [this.caseScroller];
     }
     return this.rightsTab === RIGHTS_DOSSIER ? [this.dossierScroller] : [];
@@ -2687,7 +2793,7 @@ struct Index {
   // The 维权 page has scrolled under its title bar. 证据 starts below the
   // title bar, so nothing passes under it there and it keeps the blue band.
   private rightsScrolled(): boolean {
-    if (this.rightsTab === RIGHTS_CHAT) {
+    if (this.chatShown()) {
       return this.caseChat.scrolled;
     }
     return this.rightsTab === RIGHTS_DOSSIER && this.dossierScrolled;
@@ -2696,7 +2802,7 @@ struct Index {
   // The title bar's room over the 维权 pages: status bar, title row and page
   // switch.
   private rightsTopInset(): number {
-    return this.statusBarHeight + TITLE_ROW_HEIGHT + RIGHTS_SEGMENT_HEIGHT;
+    return this.statusBarHeight + TITLE_ROW_HEIGHT + (this.env.split() ? 0 : RIGHTS_SEGMENT_HEIGHT);
   }
 
   private rightsMenu(): HdsNavigationMenuItemOptions[] {
@@ -2730,7 +2836,7 @@ struct Index {
     .padding(3)
     .backgroundColor('#2EFFFFFF')
     .borderRadius(12)
-    .margin({ left: 16, right: 16, top: 2, bottom: 6 })
+    .margin({ left: this.env.side(), right: this.env.side(), top: 2, bottom: 6 })
   }
 
   @Builder
@@ -2771,6 +2877,9 @@ struct Index {
       mode: $contractMode,
       embedded: true,
       bottomInset: this.env.keyboardVisible ? 0 : TAB_BAR_CLEARANCE,
+      side: this.env.side(),
+      wide: this.env.wide(),
+      split: this.env.split(),
       dataVersion: this.localDataVersion,
       onReadingChange: (reading: boolean) => {
         this.setTabBarHidden(reading);
@@ -2808,25 +2917,30 @@ struct Index {
         .backgroundColor(this.scenarioGold(index) ?
           (this.env.isDark ? '#2A2416' : '#F6EAD2') : this.env.cx.tint)
         .borderRadius(10)
-        Blank()
-        Text('›')
-          .fontSize(20)
-          .fontColor(this.env.cx.faint)
+        if (!this.env.wide()) {
+          Blank()
+          Text('›')
+            .fontSize(20)
+            .fontColor(this.env.cx.faint)
+        }
       }
-      .width('100%')
+      .width(this.env.wide() ? undefined : '100%')
       Text(item.title)
         .fontSize(14)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.env.cx.text)
+        .textAlign(this.env.wide() ? TextAlign.Center : TextAlign.Start)
         .width('100%')
         .margin({ top: 10 })
       Text(item.description)
         .fontSize(10.5)
         .fontColor(this.env.cx.muted)
+        .textAlign(this.env.wide() ? TextAlign.Center : TextAlign.Start)
         .width('100%')
         .margin({ top: 3 })
     }
-    .alignItems(HorizontalAlign.Start)
+    // A tablet's row of four reads centered.
+    .alignItems(this.env.wide() ? HorizontalAlign.Center : HorizontalAlign.Start)
     .width('100%')
     .padding(13)
     .backgroundColor(this.env.cx.surface)
@@ -2983,7 +3097,16 @@ struct Index {
 
   // The title bar's button on the right: history. The scale on the left
   // (in the back button's place) goes back to the home.
+  // Room on each side of 普法's conversation.
+  private quickSide(): number {
+    return this.env.split() ? QUICK_SPLIT_SIDE : this.env.side();
+  }
+
   private quickMenu(): HdsNavigationMenuItemOptions[] {
+    // In two panes the history is already beside the conversation.
+    if (this.env.split()) {
+      return [];
+    }
     return [{
       content: {
         icon: $r('app.media.ic_menu'),
@@ -3024,11 +3147,11 @@ struct Index {
       }
       .alignItems(HorizontalAlign.Start)
       .width('100%')
-      .padding({ left: 22, right: 22, top: 104, bottom: 22 })
+      .padding({ left: this.quickSide() + 6, right: this.quickSide() + 6, top: 104, bottom: 22 })
     }
-    // Full width: the conversation pads its content by 16 on each side.
-    // Wider than its column, which centers it, so it reaches both edges.
-    .width('calc(100% + 32vp)')
+    // Full width, wider than the conversation's column, which centers it, so
+    // it reaches both edges; its text lines up with the column.
+    .width(`calc(100% + ${this.quickSide() * 2}vp)`)
     .clip(true)
     .linearGradient({
       angle: 118,
@@ -3039,58 +3162,78 @@ struct Index {
 
   @Builder
   private QuickPage() {
-    HdsNavigation() {
-      this.QuickConversation()
+    Row() {
+      // In two panes the history is always on screen beside the conversation.
+      if (this.env.split()) {
+        HistoryDrawer({
+          drawer: this.drawer,
+          sessions: $quickHistory,
+          activeId: this.quick.messages.length > 0 ? this.quickSessionId : '',
+          busy: this.quick.sending,
+          actions: this.drawerActions,
+          docked: true,
+          headerHeight: this.statusBarHeight + TITLE_ROW_HEIGHT,
+          headerBlue: !this.quick.scrolled
+        })
+          .width(HISTORY_PANE_WIDTH)
+          .height('100%')
+      }
+      HdsNavigation() {
+        this.QuickConversation()
+      }
+      .titleBar({
+        style: {
+          scrollEffectOpts: {
+            enableScrollEffect: true,
+            scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+          },
+          systemMaterialEffect: {
+            materialType: Material.hdsType(),
+            materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
+          },
+          // Over the blue header the title is hidden (the header shows it large)
+          // and the buttons are white; once the bar turns to the system's glass
+          // they darken.
+          originalStyle: {
+            contentStyle: {
+              menuStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' },
+              backIconStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' }
+            }
+          },
+          scrollEffectStyle: {
+            contentStyle: {
+              menuStyle: { iconColor: this.env.cx.brand },
+              backIconStyle: { iconColor: this.env.cx.brand }
+            }
+          }
+        },
+        // No title: the scale mark on the left, history on the right.
+        content: {
+          title: { mainTitle: '' },
+          backIcon: {
+            icon: $r('app.media.ic_scale'),
+            label: '回到普法首页',
+            isEnabled: !this.quick.sending,
+            action: () => {
+              this.startNewConsultation();
+            }
+          },
+          menu: { value: this.quickMenu() }
+        },
+        // Below the status bar, while the page's content runs up under it.
+        avoidLayoutSafeArea: true
+      })
+      .titleMode(HdsNavigationTitleMode.MINI)
+      .hideBackButton(false)
+      .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
+      .mode(NavigationMode.Stack)
+      // Stays while scrolling; only immersive reading (a tap) hides it.
+      .hideTitleBar(this.quick.immersive, true)
+      .bindToScrollable([this.quickScroller])
+      .layoutWeight(1)
     }
-    .titleBar({
-      style: {
-        scrollEffectOpts: {
-          enableScrollEffect: true,
-          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
-        },
-        systemMaterialEffect: {
-          materialType: Material.hdsType(),
-          materialLevel: Material.hdsLevel(this.env.lightLevel, this.env.reduceMotion)
-        },
-        // Over the blue header the title is hidden (the header shows it large)
-        // and the buttons are white; once the bar turns to the system's glass
-        // they darken.
-        originalStyle: {
-          contentStyle: {
-            menuStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' },
-            backIconStyle: { iconColor: this.env.cx.headerText, backgroundColor: '#33FFFFFF' }
-          }
-        },
-        scrollEffectStyle: {
-          contentStyle: {
-            menuStyle: { iconColor: this.env.cx.brand },
-            backIconStyle: { iconColor: this.env.cx.brand }
-          }
-        }
-      },
-      // No title: the scale mark on the left, history on the right.
-      content: {
-        title: { mainTitle: '' },
-        backIcon: {
-          icon: $r('app.media.ic_scale'),
-          label: '回到普法首页',
-          isEnabled: !this.quick.sending,
-          action: () => {
-            this.startNewConsultation();
-          }
-        },
-        menu: { value: this.quickMenu() }
-      },
-      // Below the status bar, while the page's content runs up under it.
-      avoidLayoutSafeArea: true
-    })
-    .titleMode(HdsNavigationTitleMode.MINI)
-    .hideBackButton(false)
-    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
-    .mode(NavigationMode.Stack)
-    // Stays while scrolling; only immersive reading (a tap) hides it.
-    .hideTitleBar(this.quick.immersive, true)
-    .bindToScrollable([this.quickScroller])
+    .width('100%')
+    .height('100%')
   }
 
   @Builder
@@ -3106,7 +3249,8 @@ struct Index {
       scrollToRead: false,
       readingRoom: this.readingRoom(false),
       picking: this.isAttachmentPicking,
-      drawerSwipe: true,
+      drawerSwipe: !this.env.split(),
+      side: this.env.split() ? QUICK_SPLIT_SIDE : -1,
       scrollId: QUICK_SCROLL_ID,
       turnId: QUICK_TURN_ID,
       scroller: this.quickScroller,
@@ -3156,7 +3300,8 @@ struct Index {
           }
         })
       }
-      .columnsTemplate('1fr 1fr')
+      // One row of four on a tablet.
+      .columnsTemplate(this.env.wide() ? '1fr 1fr 1fr 1fr' : '1fr 1fr')
       .columnsGap(10)
       .rowsGap(10)
       .width('100%')
@@ -3179,6 +3324,7 @@ struct Index {
       tapToHide: true,
       scrollToRead: false,
       topInset: this.rightsTopInset(),
+      side: this.env.split() ? 24 : -1,
       readingRoom: this.readingRoom(true),
       picking: this.isAttachmentPicking,
       scrollId: CASE_SCROLL_ID,
@@ -3196,6 +3342,8 @@ struct Index {
   // opening prompt.
   @Builder
   private CaseLead() {
+    // In two panes the dossier beside the conversation shows this already.
+    if (!this.env.split()) {
     Row({ space: 13 }) {
       ProgressRing({ value: this.caseState.progress, size: 54, cx: this.env.cx })
       Column() {
@@ -3226,6 +3374,7 @@ struct Index {
     .backgroundColor(this.env.cx.surface)
     .borderRadius(18)
     .border({ width: 1, color: this.env.cx.line })
+    }
 
     // Opening prompt, laid flat like the answers.
     Text('请从事情的起因开始描述。暂时不确定的信息也可以留空，我会继续追问。')
@@ -3332,17 +3481,20 @@ struct Index {
           '64%' : 290,
         preferType: SheetType.BOTTOM,
         dragBar: true,
-        showClose: false,
+        showClose: this.env.wide(),
         maskColor: this.env.isDark ? '#88040B18' : '#66404A5A',
         systemMaterial: this.sheetMaterial(),
-        onWillDismiss: () => {
+        onWillDismiss: (action: DismissSheetAction) => {
+          // With this callback the sheet closes only when told to; on a tablet,
+          // where it is a centered dialog, it otherwise stays as an empty frame.
+          action.dismiss();
           // Dismissing a citation opened from the report goes back to the report.
           this.sheetKind = this.sheetKind === SHEET_CITATION ? this.detailReturnSheet : 0;
           this.detailReturnSheet = 0;
         }
       })
 
-      if (this.drawer.visible) {
+      if (this.drawer.visible && !this.env.split()) {
         HistoryDrawer({
           drawer: this.drawer,
           sessions: $quickHistory,

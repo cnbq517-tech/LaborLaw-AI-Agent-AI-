@@ -116,6 +116,14 @@ export struct ContractReview {
   // header of its own, and content leaves room for the floating tab bar.
   @Prop embedded: boolean = false;
   @Prop bottomInset: number = 0;
+  // Room on each side of the content (wider on a tablet, to center it).
+  @Prop side: number = 16;
+  // A tablet's layout.
+  @Prop wide: boolean = false;
+  // Room for two panes: the report shows the text with its findings beside it.
+  @Prop split: boolean = false;
+  // The pane beside the text shows one finding rather than the list.
+  @State paneFinding: boolean = false;
   // Changes when local records are cleared elsewhere; the reports reload.
   @Prop @Watch('reload') dataVersion: number = 0;
   onCountChange: (count: number) => void = (count: number) => {
@@ -226,6 +234,7 @@ export struct ContractReview {
     if (this.mode !== CONTRACT_MODE_REPORT) {
       this.setFolded(false);
     }
+    this.paneFinding = false;
     this.trackScrolledSoon();
   }
 
@@ -237,7 +246,19 @@ export struct ContractReview {
     if (this.mode === CONTRACT_MODE_FACTS) {
       return this.factsScroller;
     }
-    return this.report() !== undefined && this.reportView === VIEW_TEXT ? this.docScroller : this.reportScroller;
+    return this.report() !== undefined && (this.reportView === VIEW_TEXT || this.splitReport()) ?
+      this.docScroller : this.reportScroller;
+  }
+
+  // The report as two panes: the text, and the findings beside it.
+  private splitReport(): boolean {
+    return this.split && this.report() !== undefined &&
+      (this.mode === CONTRACT_MODE_REPORT || this.mode === CONTRACT_MODE_CLAUSE);
+  }
+
+  // Room on each side of the text: a pane of its own in two panes.
+  private textSide(): number {
+    return this.splitReport() ? 20 : this.side;
   }
 
   private trackScrolled(): void {
@@ -475,7 +496,12 @@ export struct ContractReview {
     }
     this.navPos = order.indexOf(k);
     this.showThinking = false;
-    this.sheet = SHEET_FINDING;
+    // In two panes the finding shows beside the text, which stays in view.
+    if (this.splitReport()) {
+      this.paneFinding = true;
+    } else {
+      this.sheet = SHEET_FINDING;
+    }
     this.scrollToFinding(k);
   }
 
@@ -506,7 +532,7 @@ export struct ContractReview {
 
   private scrollToFinding(k: number): void {
     const report: ContractReport | undefined = this.report();
-    if (report === undefined || this.reportView !== VIEW_TEXT) {
+    if (report === undefined || (this.reportView !== VIEW_TEXT && !this.splitReport())) {
       return;
     }
     const f: Finding = report.findings[k];
@@ -527,7 +553,9 @@ export struct ContractReview {
         const utils = this.getUIContext().getComponentUtils();
         const top: number = utils.getRectangleById(DOC_SCROLL_ID).windowOffset.y;
         const at: number = utils.getRectangleById('docline-' + line.toString()).windowOffset.y;
-        const offset: number = this.docScroller.currentOffset().yOffset + this.getUIContext().px2vp(at - top) - 60;
+        // Just below the title bar floating over the text.
+        const offset: number = this.docScroller.currentOffset().yOffset + this.getUIContext().px2vp(at - top) -
+          this.topInset() - 24;
         this.docScroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, offset), animation: { duration: 260 } });
       } catch (error) {
         // The line may not be laid out yet; the sheet still shows the finding.
@@ -783,7 +811,7 @@ export struct ContractReview {
         }
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 12 + this.topInset(), bottom: 40 + this.bottomInset })
+      .padding({ left: this.side, right: this.side, top: 12 + this.topInset(), bottom: 40 + this.bottomInset })
     }
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
@@ -947,7 +975,7 @@ export struct ContractReview {
         .border({ width: 1, color: this.cx.line })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: this.topInset(), bottom: 120 + this.bottomInset })
+      .padding({ left: this.side, right: this.side, top: this.topInset(), bottom: 120 + this.bottomInset })
     }
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
@@ -1088,7 +1116,8 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%')
         }
         .width('100%')
-        .padding({ left: 16, right: 16, top: this.topInset(), bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
+        .padding(this.splitReport() ? { left: 14, right: 14, top: 12, bottom: 16 } :
+          { left: this.side, right: this.side, top: this.topInset(), bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
         .onClick(() => {
           this.revealOnTap();
         })
@@ -1301,7 +1330,9 @@ export struct ContractReview {
           Text(DISCLAIMER).fontSize(10.5).lineHeight(16).fontColor(this.cx.faint).width('100%').margin({ top: 16 })
         }
         .width('100%')
-        .padding({ left: 16, right: 22, top: 10 + this.topInset(), bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
+        // The right side leaves room for the minimap at the edge.
+        .padding({ left: this.textSide(), right: this.textSide() + 6, top: 10 + this.topInset(),
+          bottom: this.askCollapsed ? 90 : this.askHeight + 12 })
         .onClick(() => {
           this.revealOnTap();
         })
@@ -1417,7 +1448,7 @@ export struct ContractReview {
       .margin({ bottom: 24 + this.bottomInset })
     }
     .width('100%')
-    .padding({ left: 16, right: 16 })
+    .padding({ left: this.textSide(), right: this.textSide() })
     .hitTestBehavior(HitTestMode.Transparent)
     .onAreaChange((oldValue: Area, newValue: Area) => {
       this.askHeight = newValue.height as number;
@@ -1453,6 +1484,44 @@ export struct ContractReview {
       .onClick(() => {
         action();
       })
+  }
+
+  // Beside the text in two panes: the findings, or the one picked in the
+  // text or the list, with a way back to the list.
+  @Builder
+  private ReportPane() {
+    Column() {
+    Column() {
+      if (this.paneFinding && this.currentFinding() !== undefined) {
+        Row() {
+          Text('‹ 问题清单')
+            .fontSize(13)
+            .fontColor(this.cx.brand)
+            .padding({ top: 10, bottom: 6 })
+            .onClick(() => {
+              this.paneFinding = false;
+            })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16 })
+        Column() {
+          this.FindingSheet()
+        }
+        .layoutWeight(1)
+      } else {
+        this.Report()
+      }
+    }
+    .width('100%')
+    .layoutWeight(1)
+    .backgroundColor(this.cx.surface)
+    .borderRadius(18)
+    .border({ width: 1, color: this.cx.line })
+    .clip(true)
+    }
+    .width('40%')
+    .height('100%')
+    .padding({ top: this.topInset() + 8, right: 16, bottom: 16 + this.bottomInset })
   }
 
   @Builder
@@ -1720,31 +1789,34 @@ export struct ContractReview {
             })
         })
       Blank()
-      Row() {
-        Text('原文')
-          .fontSize(11.5)
-          .fontColor(this.toggleColor(this.reportView === VIEW_TEXT))
-          .fontWeight(this.reportView === VIEW_TEXT ? FontWeight.Bold : FontWeight.Regular)
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .backgroundColor(this.reportView === VIEW_TEXT ? this.toggleSelected() : Color.Transparent)
-          .borderRadius(9)
-          .onClick(() => {
-            this.reportView = VIEW_TEXT;
-          })
-        Text('清单')
-          .fontSize(11.5)
-          .fontColor(this.toggleColor(this.reportView === VIEW_LIST))
-          .fontWeight(this.reportView === VIEW_LIST ? FontWeight.Bold : FontWeight.Regular)
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .backgroundColor(this.reportView === VIEW_LIST ? this.toggleSelected() : Color.Transparent)
-          .borderRadius(9)
-          .onClick(() => {
-            this.reportView = VIEW_LIST;
-          })
+      // Both are on screen in two panes.
+      if (!this.splitReport()) {
+        Row() {
+          Text('原文')
+            .fontSize(11.5)
+            .fontColor(this.toggleColor(this.reportView === VIEW_TEXT))
+            .fontWeight(this.reportView === VIEW_TEXT ? FontWeight.Bold : FontWeight.Regular)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .backgroundColor(this.reportView === VIEW_TEXT ? this.toggleSelected() : Color.Transparent)
+            .borderRadius(9)
+            .onClick(() => {
+              this.reportView = VIEW_TEXT;
+            })
+          Text('清单')
+            .fontSize(11.5)
+            .fontColor(this.toggleColor(this.reportView === VIEW_LIST))
+            .fontWeight(this.reportView === VIEW_LIST ? FontWeight.Bold : FontWeight.Regular)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .backgroundColor(this.reportView === VIEW_LIST ? this.toggleSelected() : Color.Transparent)
+            .borderRadius(9)
+            .onClick(() => {
+              this.reportView = VIEW_LIST;
+            })
+        }
+        .padding(2)
+        .backgroundColor(this.scrolled ? this.cx.surface2 : '#2EFFFFFF')
+        .borderRadius(11)
       }
-      .padding(2)
-      .backgroundColor(this.scrolled ? this.cx.surface2 : '#2EFFFFFF')
-      .borderRadius(11)
     }
     .width('100%')
     .padding({ left: 14, right: 12, top: 2, bottom: 8 })
@@ -1883,14 +1955,15 @@ export struct ContractReview {
               .width('100%')
             }
             .width('100%')
-            .padding({ left: 16, right: 16, top: 10, bottom: 28 + this.bottomInset })
+            .padding({ left: this.side, right: this.side, top: 10, bottom: 28 + this.bottomInset })
             .backgroundColor(this.cx.bgBottom)
           }
           .layoutWeight(1)
         } else if (this.mode === CONTRACT_MODE_REPORT || this.mode === CONTRACT_MODE_CLAUSE) {
+          Row() {
           Stack({ alignContent: Alignment.BottomEnd }) {
             Column() {
-              if (this.report() !== undefined && this.reportView === VIEW_TEXT) {
+              if (this.report() !== undefined && (this.reportView === VIEW_TEXT || this.splitReport())) {
                 this.DocView()
               } else {
                 this.Report()
@@ -1922,6 +1995,13 @@ export struct ContractReview {
             }
           }
           .layoutWeight(1)
+          .height('100%')
+          if (this.splitReport()) {
+            this.ReportPane()
+          }
+          }
+          .layoutWeight(1)
+          .alignItems(VerticalAlign.Top)
         } else {
           this.Home()
         }
@@ -1938,7 +2018,7 @@ export struct ContractReview {
           .fontSize(12)
           .fontColor(this.cx.muted)
           .width('100%')
-          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+          .padding({ left: this.side, right: this.side, top: 8, bottom: 8 })
           .backgroundColor(this.cx.surface2)
           .margin({ top: this.topInset() })
       } else if (this.notice.length > 0) {
@@ -1946,7 +2026,7 @@ export struct ContractReview {
           .fontSize(12)
           .fontColor(this.cx.warn)
           .width('100%')
-          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+          .padding({ left: this.side, right: this.side, top: 8, bottom: 8 })
           .backgroundColor(this.cx.dangerBg)
           .margin({ top: this.topInset() })
           .onClick(() => {
@@ -1966,10 +2046,15 @@ export struct ContractReview {
     .bindSheet(this.sheet !== SHEET_NONE, this.SheetBody(), {
       height: this.sheet === SHEET_PREVIEW ? '70%' : this.sheet === SHEET_FINDING ? '62%' : '60%',
       dragBar: true,
-      showClose: false,
+      // On a tablet, a dialog in the middle with a close button and a mask
+      // that closes it (by default it would float by the finger, unmasked).
+      preferType: this.wide ? SheetType.CENTER : undefined,
+      showClose: this.wide,
       maskColor: this.isDark ? '#88040B18' : '#66404A5A',
-      systemMaterial: Material.dialog(this.isDark),
-      onWillDismiss: () => {
+      systemMaterial: Material.dialog(this.isDark, this.wide),
+      onWillDismiss: (action: DismissSheetAction) => {
+        // With this callback the sheet closes only when told to.
+        action.dismiss();
         this.sheet = SHEET_NONE;
       }
     })

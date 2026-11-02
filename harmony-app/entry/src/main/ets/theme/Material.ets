@@ -86,13 +86,15 @@ export class Material {
   }
 
   // Sheets, dialogs and toasts. Their level is the system's; apps cannot set it.
-  static dialog(isDark: boolean): uiMaterial.Material | undefined {
+  // A sheet shown as a dialog over the page (a tablet's) is nearly opaque, as
+  // the page right behind its text would show through.
+  static dialog(isDark: boolean, overPage: boolean = false): uiMaterial.Material | undefined {
     if (!Material.supported()) {
       return undefined;
     }
     return new uiMaterial.ImmersiveMaterial({
       style: uiMaterial.ImmersiveStyle.THICK,
-      materialColor: isDark ? '#66172940' : '#88EAF0F8',
+      materialColor: overPage ? (isDark ? '#E6172940' : '#E6F4F7FB') : (isDark ? '#66172940' : '#88EAF0F8'),
       applyShadow: true
     });
   }

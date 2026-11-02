@@ -61,6 +61,8 @@ export struct DossierPage {
   @Prop floatError: string = '';
   // Room at the top for the title bar floating over the page.
   @Prop topInset: number = 0;
+  // Room on each side when the page sets it (a pane of its own).
+  @Prop side: number = -1;
   // Whether the page has scrolled under that title bar.
   onScrolled: (scrolled: boolean) => void = () => {
   };
@@ -206,6 +208,10 @@ export struct DossierPage {
         this.chatActions.openCitations(citations);
       })
     }
+  }
+
+  private padSide(): number {
+    return this.side >= 0 ? this.side : this.env.side();
   }
 
   build() {
@@ -372,7 +378,8 @@ export struct DossierPage {
           .width('100%')
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 14 + this.topInset, bottom: CONTENT_BOTTOM })
+      .padding({ left: this.padSide(), right: this.padSide(), top: 14 + this.topInset,
+        bottom: this.side >= 0 ? 24 : CONTENT_BOTTOM })
     }
     .scrollBar(BarState.Off)
     .width('100%')

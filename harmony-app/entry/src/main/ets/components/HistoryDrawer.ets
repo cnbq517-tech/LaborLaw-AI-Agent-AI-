@@ -30,6 +30,14 @@ export struct HistoryDrawer {
   // A reply is streaming in, so 新建咨询 waits.
   @Prop busy: boolean = false;
   actions: DrawerActions = new DrawerActions();
+  // Always on screen beside the conversation (a tablet held sideways) rather
+  // than sliding in over it.
+  @Prop docked: boolean = false;
+  // Docked: the height of the strip at its top that lines up with the title
+  // bar beside it, and whether that bar is blue (the page at its top) or the
+  // system's glass (scrolled).
+  @Prop headerHeight: number = 0;
+  @Prop headerBlue: boolean = true;
   @State pressedId: string = '';
   @State glowX: number = 0;
   @State glowY: number = 0;
@@ -37,7 +45,8 @@ export struct HistoryDrawer {
   private searchController: TextInputController = new TextInputController();
 
   private onDrawerChange(): void {
-    if (!this.drawer.open) {
+    // Docked, the drawer never opens; typing a search changes it too.
+    if (!this.drawer.open && !this.docked) {
       this.searchController.stopEditing();
     }
   }
@@ -178,6 +187,19 @@ export struct HistoryDrawer {
   }
 
   build() {
+    if (this.docked) {
+      Column() {
+        this.DockedHeader()
+        Column()
+          .height(16)
+        this.Panel()
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ bottom: 24 })
+      .backgroundColor(this.env.isDark ? '#0E1B30' : '#F7F9FC')
+      .border({ width: { right: 1 }, color: this.env.cx.line })
+    } else {
     Stack({ alignContent: Alignment.TopStart }) {
       Column()
         .width('100%')
@@ -190,139 +212,7 @@ export struct HistoryDrawer {
         })
 
       Column() {
-        Row() {
-          Column({ space: 4 }) {
-            Text('历史咨询')
-              .fontSize(21)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.env.cx.text)
-            Row()
-              .width(28)
-              .height(3)
-              .backgroundColor(this.env.cx.glow)
-              .borderRadius(2)
-              .margin({ top: 4 })
-          }
-          .alignItems(HorizontalAlign.Start)
-          Blank()
-          Text(this.sessions.length.toString() + ' 段')
-            .fontSize(11)
-            .fontColor(this.env.cx.muted)
-            .padding({ left: 9, right: 9, top: 4, bottom: 4 })
-            .backgroundColor(this.env.cx.tint)
-            .borderRadius(999)
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Top)
-        .padding({ left: 20, right: 18 })
-
-        Row({ space: 8 }) {
-          ChatIcon({ res: $r('app.media.ic_search'), size: 16, color: this.env.cx.faint })
-          TextInput({ text: this.drawer.query, placeholder: '搜索咨询记录', controller: this.searchController })
-            .layoutWeight(1)
-            .height(40)
-            .fontSize(14)
-            .fontColor(this.env.cx.text)
-            .placeholderColor(this.env.cx.placeholder)
-            .caretColor(this.env.cx.gold)
-            .backgroundColor(Color.Transparent)
-            .padding({ left: 0, right: 0 })
-            .onChange((value: string) => {
-              this.drawer.query = value;
-            })
-        }
-        .height(42)
-        .padding({ left: 13, right: 8 })
-        .backgroundColor(this.env.cx.inputBg)
-        .borderRadius(21)
-        .border({ width: 1, color: this.env.cx.line })
-        .margin({ left: 16, right: 16, top: 16 })
-
-        Column() {
-          Row({ space: 7 }) {
-            ChatIcon({ res: $r('app.media.ic_compose'), size: 17, color: this.env.cx.onGold })
-            Text('新建咨询')
-              .fontSize(15)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.env.cx.onGold)
-          }
-        }
-        .height(46)
-        .alignSelf(ItemAlign.Stretch)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(15)
-        .backgroundColor(this.env.cx.gold)
-        .shadow({ radius: 16, color: this.env.cx.navShadow, offsetY: 4 })
-        .visualEffect(pointLight(LIGHT_BUTTON, this.env.isDark, this.env.cx))
-        .margin({ left: 16, right: 16, top: 12 })
-        .opacity(this.busy ? 0.5 : 1)
-        .accessibilityText('新建咨询')
-        .onClick(() => {
-          this.actions.startNew();
-        })
-
-        if (this.sessions.length === 0 || ConversationText.historyGroups(this.sessions, this.drawer.query).length === 0) {
-          Column({ space: 8 }) {
-            Column() {
-              ChatIcon({ res: this.sessions.length === 0 ? $r('app.media.ic_clock') : $r('app.media.ic_search'), size: 22, color: this.env.cx.brand })
-            }
-            .width(48)
-            .height(48)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(this.env.cx.tint)
-            .borderRadius(16)
-            Text(this.sessions.length === 0 ? '还没有咨询记录' : '没有找到相关咨询')
-              .fontSize(14)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.env.cx.text)
-            Text(this.sessions.length === 0 ? '每次问答结束后会自动保存在这里' : '换个关键词试试')
-              .fontSize(11.5)
-              .fontColor(this.env.cx.muted)
-          }
-          .layoutWeight(1)
-          .width('100%')
-          .justifyContent(FlexAlign.Center)
-        } else {
-          List({ space: 4 }) {
-            ForEach(ConversationText.historyGroups(this.sessions, this.drawer.query), (group: HistoryGroup) => {
-              ListItemGroup({ header: this.HistoryGroupHeader(group.label) }) {
-                ForEach(group.sessions, (session: QuickSession) => {
-                  ListItem() {
-                    this.DrawerSessionRow(session)
-                  }
-                  .swipeAction({
-                    end: {
-                      builder: () => {
-                        this.DrawerDeleteAction(session.id)
-                      }
-                    }
-                  })
-                }, (session: QuickSession) => session.id + '_' + session.updatedAt.toString())
-              }
-            }, (group: HistoryGroup) => group.label + '_' + group.sessions.length.toString())
-          }
-          .layoutWeight(1)
-          .width('100%')
-          .padding({ left: 10, right: 10 })
-          .margin({ top: 8 })
-          .scrollBar(BarState.Off)
-          .edgeEffect(EdgeEffect.Spring)
-        }
-
-        Row({ space: 6 }) {
-          ChatIcon({ res: $r('app.media.ic_shield'), size: 12, color: this.env.cx.ok })
-          Text('仅保存在本机 · ' + this.sessions.length.toString() + ' / '
-            + MAX_QUICK_SESSIONS.toString() + ' 段')
-            .fontSize(11)
-            .fontColor(this.env.cx.muted)
-          Blank()
-          Text('左滑可删除')
-            .fontSize(11)
-            .fontColor(this.env.cx.faint)
-        }
-        .width('100%')
-        .padding({ left: 20, right: 20, top: 12 })
-        .border({ width: { top: 1 }, color: this.env.cx.line })
+        this.Panel()
       }
       .width('84%')
       .constraintSize({ maxWidth: DRAWER_WIDTH })
@@ -351,5 +241,159 @@ export struct HistoryDrawer {
     }
     .width('100%')
     .height('100%')
+    }
+  }
+
+  // Docked: lines up with the title bar beside it, blue at the top of the
+  // page and light once it scrolls, so the status bar reads over both.
+  @Builder
+  private DockedHeader() {
+    Column()
+      .width('100%')
+      .height(this.headerHeight)
+      .linearGradient(this.headerBlue ? {
+        angle: 118,
+        colors: [[this.env.cx.headerA, 0.0], [this.env.cx.headerB, 1.0]]
+      } : { angle: 180, colors: [[this.env.cx.surface, 0.0], [this.env.cx.surface, 1.0]] })
+      .animation({ duration: this.env.reduceMotion ? 0 : 220, curve: Curve.EaseOut })
+  }
+
+  // The title, search, 新建咨询, the sessions and the footer.
+  @Builder
+  private Panel() {
+      Row() {
+        Column({ space: 4 }) {
+          Text('历史咨询')
+            .fontSize(21)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.env.cx.text)
+          Row()
+            .width(28)
+            .height(3)
+            .backgroundColor(this.env.cx.glow)
+            .borderRadius(2)
+            .margin({ top: 4 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        Blank()
+        Text(this.sessions.length.toString() + ' 段')
+          .fontSize(11)
+          .fontColor(this.env.cx.muted)
+          .padding({ left: 9, right: 9, top: 4, bottom: 4 })
+          .backgroundColor(this.env.cx.tint)
+          .borderRadius(999)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+      .padding({ left: 20, right: 18 })
+
+      Row({ space: 8 }) {
+        ChatIcon({ res: $r('app.media.ic_search'), size: 16, color: this.env.cx.faint })
+        TextInput({ text: this.drawer.query, placeholder: '搜索咨询记录', controller: this.searchController })
+          .layoutWeight(1)
+          .height(40)
+          .fontSize(14)
+          .fontColor(this.env.cx.text)
+          .placeholderColor(this.env.cx.placeholder)
+          .caretColor(this.env.cx.gold)
+          .backgroundColor(Color.Transparent)
+          .padding({ left: 0, right: 0 })
+          .onChange((value: string) => {
+            this.drawer.query = value;
+          })
+      }
+      .height(42)
+      .padding({ left: 13, right: 8 })
+      .backgroundColor(this.env.cx.inputBg)
+      .borderRadius(21)
+      .border({ width: 1, color: this.env.cx.line })
+      .margin({ left: 16, right: 16, top: 16 })
+
+      Column() {
+        Row({ space: 7 }) {
+          ChatIcon({ res: $r('app.media.ic_compose'), size: 17, color: this.env.cx.onGold })
+          Text('新建咨询')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.env.cx.onGold)
+        }
+      }
+      .height(46)
+      .alignSelf(ItemAlign.Stretch)
+      .justifyContent(FlexAlign.Center)
+      .borderRadius(15)
+      .backgroundColor(this.env.cx.gold)
+      .shadow({ radius: 16, color: this.env.cx.navShadow, offsetY: 4 })
+      .visualEffect(pointLight(LIGHT_BUTTON, this.env.isDark, this.env.cx))
+      .margin({ left: 16, right: 16, top: 12 })
+      .opacity(this.busy ? 0.5 : 1)
+      .accessibilityText('新建咨询')
+      .onClick(() => {
+        this.actions.startNew();
+      })
+
+      if (this.sessions.length === 0 || ConversationText.historyGroups(this.sessions, this.drawer.query).length === 0) {
+        Column({ space: 8 }) {
+          Column() {
+            ChatIcon({ res: this.sessions.length === 0 ? $r('app.media.ic_clock') : $r('app.media.ic_search'), size: 22, color: this.env.cx.brand })
+          }
+          .width(48)
+          .height(48)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor(this.env.cx.tint)
+          .borderRadius(16)
+          Text(this.sessions.length === 0 ? '还没有咨询记录' : '没有找到相关咨询')
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.env.cx.text)
+          Text(this.sessions.length === 0 ? '每次问答结束后会自动保存在这里' : '换个关键词试试')
+            .fontSize(11.5)
+            .fontColor(this.env.cx.muted)
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+      } else {
+        List({ space: 4 }) {
+          ForEach(ConversationText.historyGroups(this.sessions, this.drawer.query), (group: HistoryGroup) => {
+            ListItemGroup({ header: this.HistoryGroupHeader(group.label) }) {
+              ForEach(group.sessions, (session: QuickSession) => {
+                ListItem() {
+                  this.DrawerSessionRow(session)
+                }
+                .swipeAction({
+                  end: {
+                    builder: () => {
+                      this.DrawerDeleteAction(session.id)
+                    }
+                  }
+                })
+              }, (session: QuickSession) => session.id + '_' + session.updatedAt.toString())
+            }
+          }, (group: HistoryGroup) => group.label + '_' + group.sessions.length.toString())
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .padding({ left: 10, right: 10 })
+        .margin({ top: 8 })
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
+      }
+
+      Row({ space: 6 }) {
+        ChatIcon({ res: $r('app.media.ic_shield'), size: 12, color: this.env.cx.ok })
+        Text('仅保存在本机 · ' + this.sessions.length.toString() + ' / '
+          + MAX_QUICK_SESSIONS.toString() + ' 段')
+          .fontSize(11)
+          .fontColor(this.env.cx.muted)
+        Blank()
+        Text('左滑可删除')
+          .fontSize(11)
+          .fontColor(this.env.cx.faint)
+      }
+      .width('100%')
+      .padding({ left: 20, right: 20, top: 12 })
+      .border({ width: { top: 1 }, color: this.env.cx.line })
+
   }
 }

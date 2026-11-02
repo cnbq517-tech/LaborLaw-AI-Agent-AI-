@@ -648,6 +648,8 @@ export struct StreamingView {
 export struct PinnedComposer {
   @Consume('env') env: AppEnv;
   @ObjectLink chat: ChatSession;
+  // Room on each side, as the conversation's.
+  @Prop side: number = 16;
   @Prop forCase: boolean = false;
   @Prop placeholder: string = '';
   @Prop picking: boolean = false;
@@ -760,7 +762,7 @@ export struct PinnedComposer {
       }
     }
     .width('100%')
-    .padding({ left: 16, right: 16 })
+    .padding({ left: this.side, right: this.side })
     // Touches beside the capsule reach the conversation underneath.
     .hitTestBehavior(HitTestMode.Transparent)
     .onAreaChange((oldValue: Area, newValue: Area) => {

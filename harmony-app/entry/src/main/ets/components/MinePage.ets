@@ -486,7 +486,8 @@ export struct MinePage {
         .borderRadius(16)
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 14 + this.statusBarHeight + TITLE_ROW_HEIGHT, bottom: CONTENT_BOTTOM })
+      .padding({ left: this.env.side(), right: this.env.side(), top: 14 + this.statusBarHeight + TITLE_ROW_HEIGHT,
+        bottom: CONTENT_BOTTOM })
     }
     .scrollBar(BarState.Off)
     .width('100%')
