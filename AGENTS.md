@@ -164,7 +164,9 @@ only when the user asks.
   again before concluding that a control does not work.
 - Evidence moves between devices two ways. 碰一碰 (phone knocks a tablet)
   only works on device pairs the system supports; the test MatePad (MRO-W00)
-  does not, in any app, though both sides register fine. 华为分享 works
+  does not, in any app, though both sides register fine. Verified working
+  between ALN-AL00 (phone) and WKI-W00 (MatePad); the gold ripple shows
+  after the system's own white ring. 华为分享 works
   everywhere: the phone sends through the share panel, the tablet's gallery
   receives it, and the app is a share target for images (`sendData` skill
   with `general.image` in module.json5), so 分享 → 本应用 stores them in the

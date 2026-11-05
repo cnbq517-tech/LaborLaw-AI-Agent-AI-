@@ -528,7 +528,8 @@ struct Index {
   }
 
   private showHintFor(): void {
-    if (this.hintsSeen < 0 || this.onboardingShown || this.hintShown !== 0 || this.demoStep !== 0) {
+    // Not while 碰一碰 or a share brings evidence in: the page changed by itself.
+    if (this.hintsSeen < 0 || this.onboardingShown || this.hintShown !== 0 || this.demoStep !== 0 || this.knockShown) {
       return;
     }
     let hint: number = 0;
@@ -3907,6 +3908,8 @@ struct Index {
         }
         .width('100%')
       }
+      // Its own width, so the text inside keeps to the card on a wide screen.
+      .width('100%')
       .padding({ left: 16, right: 16, top: 14, bottom: 10 })
       .backgroundColor('#F216233A')
       .borderRadius(16)

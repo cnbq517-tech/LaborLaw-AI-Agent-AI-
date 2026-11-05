@@ -1228,8 +1228,11 @@ export struct EvidenceLibrary {
   }
 
   @Builder
-  private CategoryChip(category: string, label: string) {
-    Text(label)
+  // The count is read here: a label passed in would keep its first value as
+  // items arrive (碰一碰, a share).
+  private CategoryChip(category: string) {
+    Text(category.length === 0 ? '全部 ' + this.items.length.toString() :
+      category + ' ' + this.categoryCount(category).toString())
       .fontSize(12)
       .fontWeight(FontWeight.Medium)
       .fontColor(this.categoryFilter === category ? this.cx.onGold : this.cx.muted)
@@ -1336,9 +1339,9 @@ export struct EvidenceLibrary {
       if (this.query.trim().length === 0 && this.usedCategories().length > 0) {
         Scroll() {
           Row({ space: 8 }) {
-            this.CategoryChip('', '全部 ' + this.items.length.toString())
+            this.CategoryChip('')
             ForEach(this.usedCategories(), (category: string) => {
-              this.CategoryChip(category, category + ' ' + this.categoryCount(category).toString())
+              this.CategoryChip(category)
             }, (category: string) => category + '_' + this.categoryCount(category).toString())
           }
         }
