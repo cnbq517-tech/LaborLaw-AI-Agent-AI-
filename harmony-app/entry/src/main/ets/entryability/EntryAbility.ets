@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { DataSpace } from '../services/DataSpace';
 import { KnockShare } from '../services/KnockShare';
 
 const DOMAIN = 0x0000;
@@ -11,6 +12,8 @@ const TABLET_SCALE: number = 1.12;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // Before any page reads its records: the user's own, or 演示模式's.
+    DataSpace.init(this.context);
     this.applyCardLaunch(want);
     this.applySharedImages(want);
     try {

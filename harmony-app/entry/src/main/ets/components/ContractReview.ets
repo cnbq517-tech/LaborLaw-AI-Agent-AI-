@@ -144,6 +144,9 @@ export struct ContractReview {
   returnModelRequest: () => void = () => {
   };
   @Prop defaultCity: string = '';
+  // 引导式演示: a new number opens the sample contract with its facts filled
+  // and the AI review on, ready for 开始审查.
+  @Prop @Watch('openDemoSample') demoSampleSeq: number = 0;
   onClose: () => void = () => {
   };
   // Asks about a clause (or the whole report) in 案件 with the findings
@@ -352,6 +355,17 @@ export struct ContractReview {
     const text: string = items.map((item: EvidenceItem) => item.text).join('\n');
     this.startFacts(new ContractSource(items.length > 1 ? `合同照片 ${items.length} 张` : items[0].title, text, true,
       `来自证据库的 ${items.length} 张合同照片`));
+  }
+
+  openDemoSample(): void {
+    if (this.demoSampleSeq === 0 || this.busy) {
+      return;
+    }
+    this.trySample();
+    this.jobTitle = '销售专员';
+    this.signed = FACT_YES;
+    this.confidential = FACT_NO;
+    this.useAi = true;
   }
 
   // The built-in fictional contract, for trying the review without a file.

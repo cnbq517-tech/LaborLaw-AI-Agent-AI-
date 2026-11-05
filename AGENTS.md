@@ -44,6 +44,11 @@ only when the user asks.
   devices. 碰一碰 (Share Kit `knockShare` on the phone's evidence library,
   `dataReceive` sandbox receive on a tablet), the system share panel for
   华为分享, and reading images shared into the app.
+- `harmony-app/entry/src/main/ets/components/Onboarding.ets` (welcome pages),
+  `DemoGuide.ets` (引导式演示 step card, opening and summary), and
+  `services/DemoScript.ets` (the five steps, sample inputs, backup loading),
+  `DemoData.ets` (直接查看示例结果), `DataSpace.ets` (which directory records
+  live in).
 - `harmony-app/entry/src/main/ets/components/ContractReview.ets`: 合同体检
   (import, facts, report, clause view), embedded as the 合同 section.
 - `harmony-app/entry/src/main/ets/components/EvidenceLibrary.ets`: 证据库
@@ -166,6 +171,25 @@ only when the user asks.
   evidence library. EntryAbility puts shared URIs in AppStorage
   (`sharedEvidence`); Index routes them, and items from 碰一碰 or a share are
   marked 来自手机 / 分享存入. Plain 华为分享 never reaches `dataReceive`.
+- 新手引导: a user with no saved records sees the welcome pages once and the
+  快速上手 card on the 普法 home (tasks tick off from real actions); 维权,
+  证据 and 合同 show a one-time hint. Flags live in the `model_config`
+  preferences (`onboarded`, `quickstart_tasks`, `quickstart_hidden`,
+  `hints_seen`); 我的 → 新手引导 replays or resets them.
+- 演示模式 keeps its records in `files/demo` (`DataSpace.root`, read once in
+  `EntryAbility.onCreate`); switching restarts the app (`restartApp`) and
+  leaving deletes that directory, so the user's records are never touched.
+  Every store must build its paths from `DataSpace.root`, not `filesDir`.
+  引导式演示 leaves sending to the presenter and calls the model for real;
+  when nothing streams within 5 s (or the call fails) the step card offers a
+  backup from `rawfile/demo/backups.json`. Those backups must come from real
+  calls: run the demo on a device and pull `files/demo/*.json`; never write
+  them by hand. Backups are marked 【备用结果 · 事先真实调用生成】.
+- A `@Builder`'s primitive argument is a copy: a value changed elsewhere does
+  not re-render it. Read state inside the builder (`DossierPage.fieldValue`),
+  or make the piece a `@Component` with `@Prop`s (`DemoButton`). An overlay
+  with `HitTestMode.Transparent` passes taps on its children through to the
+  page below as well; place overlays with `.position` instead of padding.
 - With several devices connected, pass `hdc -t <id>`. Debug signing is manual
   (AppGallery Connect certificate and a profile listing each device's UDID,
   `hdc shell bm get --udid`); add a device by adding it to the profile and

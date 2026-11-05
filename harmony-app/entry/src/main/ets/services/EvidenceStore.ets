@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { ENHANCE_NONE, EVIDENCE_PENDING, EvidenceItem, ExtractedField, INDEX_NONE } from '../models/Evidence';
+import { DataSpace } from './DataSpace';
 
 const INDEX_FILE: string = 'evidence_index.json';
 const EVIDENCE_DIR: string = 'evidence';
@@ -17,7 +18,7 @@ export class EvidenceStore {
   private static writing: Promise<void> = Promise.resolve();
 
   static directory(context: common.Context): string {
-    return context.filesDir + '/' + EVIDENCE_DIR;
+    return DataSpace.root(context) + '/' + EVIDENCE_DIR;
   }
 
   static imagePath(context: common.Context, item: EvidenceItem): string {
@@ -36,7 +37,7 @@ export class EvidenceStore {
   }
 
   static async load(context: common.Context): Promise<EvidenceItem[]> {
-    const path: string = context.filesDir + '/' + INDEX_FILE;
+    const path: string = DataSpace.root(context) + '/' + INDEX_FILE;
     if (!(await fileIo.access(path))) {
       return [];
     }
@@ -82,7 +83,7 @@ export class EvidenceStore {
     const file: EvidenceIndexFile = new EvidenceIndexFile();
     file.items = items;
     const content: string = JSON.stringify(file);
-    const path: string = context.filesDir + '/' + INDEX_FILE;
+    const path: string = DataSpace.root(context) + '/' + INDEX_FILE;
     const next: Promise<void> = EvidenceStore.writing
       .catch(() => {
         // A failed earlier write must not block later ones.

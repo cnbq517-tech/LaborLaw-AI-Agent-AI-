@@ -112,8 +112,16 @@ export struct DossierPage {
     .justifyContent(FlexAlign.Center)
   }
 
+  // Read here rather than passed in: a builder's string argument is a copy,
+  // so a value set elsewhere (filled in from evidence) would not show.
+  private fieldValue(fieldIndex: number): string {
+    const values: string[] = [this.caseState.location, this.caseState.company, this.caseState.salary,
+      this.caseState.timeline, this.caseState.request, this.caseState.details];
+    return values[fieldIndex] ?? '';
+  }
+
   @Builder
-  private FieldInput(label: string, hint: string, value: string, fieldIndex: number) {
+  private FieldInput(label: string, hint: string, fieldIndex: number) {
     Column() {
       Row({ space: 6 }) {
         Text(label)
@@ -127,7 +135,7 @@ export struct DossierPage {
       .width('100%')
       .margin({ bottom: 7 })
       if (fieldIndex === 5) {
-        TextArea({ text: value, placeholder: hint, controller: this.detailsController })
+        TextArea({ text: this.fieldValue(fieldIndex), placeholder: hint, controller: this.detailsController })
           .height(96)
           .fontColor(this.env.cx.text)
           .placeholderColor(this.env.cx.placeholder)
@@ -141,7 +149,7 @@ export struct DossierPage {
             this.actions.changed();
           })
       } else {
-        TextInput({ text: value, placeholder: hint, controller: this.fieldControllers[fieldIndex] })
+        TextInput({ text: this.fieldValue(fieldIndex), placeholder: hint, controller: this.fieldControllers[fieldIndex] })
           .height(46)
           .fontColor(this.env.cx.text)
           .placeholderColor(this.env.cx.placeholder)
@@ -283,10 +291,10 @@ export struct DossierPage {
             .fontWeight(FontWeight.Bold)
             .fontColor(this.env.cx.faint)
             .width('100%')
-          this.FieldInput(this.caseFields[0].label, this.caseFields[0].hint, this.caseState.location, 0)
-          this.FieldInput(this.caseFields[1].label, this.caseFields[1].hint, this.caseState.company, 1)
-          this.FieldInput(this.caseFields[2].label, this.caseFields[2].hint, this.caseState.salary, 2)
-          this.FieldInput(this.caseFields[3].label, this.caseFields[3].hint, this.caseState.timeline, 3)
+          this.FieldInput(this.caseFields[0].label, this.caseFields[0].hint, 0)
+          this.FieldInput(this.caseFields[1].label, this.caseFields[1].hint, 1)
+          this.FieldInput(this.caseFields[2].label, this.caseFields[2].hint, 2)
+          this.FieldInput(this.caseFields[3].label, this.caseFields[3].hint, 3)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
@@ -301,8 +309,8 @@ export struct DossierPage {
             .fontWeight(FontWeight.Bold)
             .fontColor(this.env.cx.faint)
             .width('100%')
-          this.FieldInput(this.caseFields[4].label, this.caseFields[4].hint, this.caseState.request, 4)
-          this.FieldInput(this.caseFields[5].label, this.caseFields[5].hint, this.caseState.details, 5)
+          this.FieldInput(this.caseFields[4].label, this.caseFields[4].hint, 4)
+          this.FieldInput(this.caseFields[5].label, this.caseFields[5].hint, 5)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)

@@ -37,6 +37,12 @@ export class MineActions {
   };
   setLightLevel: (level: number) => void = (level: number) => {
   };
+  replayOnboarding: () => void = () => {
+  };
+  resetQuickstart: () => void = () => {
+  };
+  setDemo: (on: boolean) => void = (on: boolean) => {
+  };
 }
 
 @Component
@@ -56,6 +62,8 @@ export struct MinePage {
   actions: MineActions = new MineActions();
   // In vp; the title bar sits below it.
   @Prop statusBarHeight: number = 40;
+  // 演示模式 is on: the records are the samples.
+  @Prop demo: boolean = false;
   private scroller: Scroller = new Scroller();
   // Scrolled under the title bar: the bar is the system's glass instead of
   // clear over the blue band.
@@ -83,6 +91,29 @@ export struct MinePage {
         .fontColor(this.env.cx.text)
     }
     .width('100%')
+  }
+
+  @Builder
+  private GuideRow(title: string, detail: string, action: () => void) {
+    Row({ space: 8 }) {
+      Column({ space: 2 }) {
+        Text(title)
+          .fontSize(14)
+          .fontColor(this.env.cx.text)
+        Text(detail)
+          .fontSize(11)
+          .fontColor(this.env.cx.muted)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text('›')
+        .fontSize(18)
+        .fontColor(this.env.cx.faint)
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10 })
+    .border({ width: { top: 1 }, color: { top: this.env.cx.line } })
+    .onClick(action)
   }
 
   @Builder
@@ -463,6 +494,27 @@ export struct MinePage {
         .width('100%')
         .alignItems(HorizontalAlign.Start)
         .padding(16)
+        .backgroundColor(this.env.cx.surface)
+        .borderRadius(18)
+        .border({ width: 1, color: this.env.cx.line })
+
+        Column({ space: 4 }) {
+          this.SettingCardHeader($r('app.media.ic_compose'), '新手引导')
+          this.GuideRow('重新查看欢迎页', '应用的三大功能、模型服务和隐私说明', () => {
+            this.actions.replayOnboarding();
+          })
+          this.GuideRow('重置快速上手', '重新显示四项上手任务和各页面的提示', () => {
+            this.actions.resetQuickstart();
+          })
+          this.GuideRow(this.demo ? '退出演示模式' : '演示模式',
+            this.demo ? '正在使用示例数据；退出后回到你自己的数据，示例数据清除' :
+              '载入示例案件、合同报告和证据，用于展示；你的数据单独保存、不受影响', () => {
+              this.actions.setDemo(!this.demo);
+            })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding({ left: 16, right: 16, top: 16, bottom: 6 })
         .backgroundColor(this.env.cx.surface)
         .borderRadius(18)
         .border({ width: 1, color: this.env.cx.line })

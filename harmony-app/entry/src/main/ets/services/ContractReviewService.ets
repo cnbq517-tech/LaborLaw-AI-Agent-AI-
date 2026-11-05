@@ -24,6 +24,7 @@ import { AttachmentService } from './AttachmentService';
 import { EvidencePipeline } from './EvidencePipeline';
 import { KnowledgeService } from './KnowledgeService';
 import { TASK_STRUCTURED } from './ModelTuning';
+import { DataSpace } from './DataSpace';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'ContractReview';
@@ -362,7 +363,7 @@ export class ContractReviewService {
   }
 
   static async load(context: common.Context): Promise<ContractReport[]> {
-    const path: string = context.filesDir + '/' + STORE_FILE;
+    const path: string = DataSpace.root(context) + '/' + STORE_FILE;
     try {
       if (!fileIo.accessSync(path)) {
         return [];
@@ -404,7 +405,7 @@ export class ContractReviewService {
     const stored: StoredReports = new StoredReports();
     stored.reports = reports.slice(0, MAX_REPORTS);
     const content: string = JSON.stringify(stored);
-    const path: string = context.filesDir + '/' + STORE_FILE;
+    const path: string = DataSpace.root(context) + '/' + STORE_FILE;
     ContractReviewService.writing = ContractReviewService.writing.catch(() => {
     }).then(async () => {
       const temp: string = path + '.tmp';

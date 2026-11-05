@@ -10,6 +10,7 @@ import {
   QuickSession,
   STATE_VERSION
 } from '../models/ChatState';
+import { DataSpace } from './DataSpace';
 
 const STATE_FILE: string = 'chat_state.json';
 const HISTORY_FILE: string = 'quick_history.json';
@@ -177,7 +178,7 @@ export class ChatStateStore {
   }
 
   private static path(context: common.UIAbilityContext, name: string = STATE_FILE): string {
-    return context.filesDir + '/' + name;
+    return DataSpace.root(context) + '/' + name;
   }
 
   private static messages(value: ChatMessage[]): ChatMessage[] {

@@ -47,7 +47,7 @@ import {
   ContractReview
 } from '../components/ContractReview';
 import { EVIDENCE_MODE_LIST, EvidenceLibrary } from '../components/EvidenceLibrary';
-import { EVIDENCE_SOURCE_PHONE, EVIDENCE_SOURCE_SHARED, EvidenceItem } from '../models/Evidence';
+import { EVIDENCE_SOURCE_PHONE, EVIDENCE_SOURCE_PHOTO, EVIDENCE_SOURCE_SHARED, EvidenceItem } from '../models/Evidence';
 import { ChecklistItem, EvidenceExtractor } from '../services/EvidenceExtractor';
 import { EvidenceSearch, SearchResult } from '../services/EvidenceSearch';
 import { EvidenceIndex } from '../services/EvidenceIndex';
@@ -60,6 +60,32 @@ import { Conversation, ConversationEvents } from '../components/chat/Conversatio
 import { DossierActions, DossierPage, ProgressRing } from '../components/DossierPage';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { DrawerState } from '../models/DrawerState';
+import { Onboarding, OnboardingActions } from '../components/Onboarding';
+import { DataSpace } from '../services/DataSpace';
+import { DemoData } from '../services/DemoData';
+import { DemoActions, DemoCover, DemoStats, DemoStepCard } from '../components/DemoGuide';
+import {
+  DEMO_BACKUP_AFTER_MS,
+  DEMO_BACKUP_MARK,
+  DEMO_COMPANY,
+  DEMO_DETAILS,
+  DEMO_LOCATION,
+  DEMO_QUESTION,
+  DEMO_REQUEST,
+  DEMO_SALARY,
+  DEMO_STEP_CASE,
+  DEMO_STEP_CONTRACT,
+  DEMO_STEP_COUNT,
+  DEMO_STEP_EVIDENCE,
+  DEMO_STEP_INTRO,
+  DEMO_STEP_QUICK,
+  DEMO_STEP_REPORT,
+  DEMO_STEP_REVIEW,
+  DEMO_STEP_SUMMARY,
+  DEMO_STORY,
+  DEMO_TIMELINE,
+  DemoBackups
+} from '../services/DemoScript';
 import { KnockReceiver, KnockShare } from '../services/KnockShare';
 import { LIGHT_ADAPTIVE, Material } from '../theme/Material';
 import {
@@ -136,6 +162,21 @@ const SHOW_REASONING_KEY: string = 'show_reasoning';
 const USE_BUILTIN_KEY: string = 'use_builtin';
 const LIGHT_LEVEL_KEY: string = 'light_level';
 const EXPAND_REASONING_KEY: string = 'expand_reasoning';
+// 新手引导: the welcome pages were seen; which 快速上手 tasks are done (bits);
+// the task card was put away.
+const ONBOARDED_KEY: string = 'onboarded';
+const QUICKSTART_KEY: string = 'quickstart_tasks';
+const QUICKSTART_HIDDEN_KEY: string = 'quickstart_hidden';
+const TASK_ASK: number = 1;
+const TASK_CASE: number = 2;
+const TASK_CONTRACT: number = 4;
+const TASK_SETTINGS: number = 8;
+const TASKS_ALL: number = 15;
+// First-visit hints already shown (bits).
+const HINTS_KEY: string = 'hints_seen';
+const HINT_CASE: number = 1;
+const HINT_CONTRACT: number = 2;
+const HINT_EVIDENCE: number = 4;
 
 @Entry
 @Component
@@ -149,7 +190,7 @@ struct Index {
   @StorageLink('sharedEvidenceSequence')
   @Watch('onSharedEvidence')
   sharedEvidenceSequence: number = 0;
-  @State @Watch('syncStatusBar') currentSection: AppSection = AppSection.QUICK;
+  @State @Watch('onPageShown') currentSection: AppSection = AppSection.QUICK;
   @Provide('env') env: AppEnv = new AppEnv();
   @State @Watch('applyReading') quick: ChatSession = new ChatSession();
   @State @Watch('applyReading') caseChat: ChatSession = new ChatSession();
@@ -186,7 +227,36 @@ struct Index {
   @State knockNote: string = '';
   @State incomingUris: string[] = [];
   @State incomingSource: string = EVIDENCE_SOURCE_PHONE;
+  @State @Watch('syncStatusBar') onboardingShown: boolean = false;
+  @State quickstartTasks: number = 0;
+  // Hidden until it is known whether this is a new user.
+  @State quickstartHidden: boolean = true;
+  // The first-visit hint on screen (a HINT_ bit, 0 for none), and those seen.
+  @State hintShown: number = 0;
+  private hintsSeen: number = -1;
+  // 演示模式: the sample records are in use (read at start-up).
+  private demo: boolean = DataSpace.demo;
+  // 演示模式 showing the finished samples (直接查看示例结果).
+  @State demoBrowse: boolean = false;
+  // 引导式演示: the step on screen (0 none, DEMO_STEP_INTRO, 1..5, summary),
+  // whether it is done, and whether the model is slow enough to offer a backup.
+  @State demoStep: number = 0;
+  @State demoDone: boolean = false;
+  @State demoSlow: boolean = false;
+  @State demoStats: DemoStats = new DemoStats();
+  // The step card's place and size, kept from step to step.
+  @State demoCardX: number = 0;
+  @State demoCardY: number = 0;
+  @State demoCardSmall: boolean = false;
+  private demoBackups: DemoBackups = new DemoBackups();
+  private demoActions: DemoActions = new DemoActions();
+  private demoTimer: number = -1;
+  private demoUsingBackup: boolean = false;
+  private demoStartedAt: number = 0;
+  private onboardingActions: OnboardingActions = new OnboardingActions();
   @State incomingSeq: number = 0;
+  // 引导式演示 asks the contract page to open the sample, ready to review.
+  @State contractDemoSeq: number = 0;
   private incomingClaimed: number = 0;
   private knockTimer: number = -1;
   // 合同 and 我的 have scrolled under their title bars.
@@ -202,7 +272,7 @@ struct Index {
   // The citation the detail sheet shows, so its chip stands out in the answer.
   @Provide('activeCitation') activeCitation: string = '';
   @State evidenceMode: number = EVIDENCE_MODE_LIST;
-  @State @Watch('syncStatusBar') rightsTab: number = RIGHTS_CHAT;
+  @State @Watch('onPageShown') rightsTab: number = RIGHTS_CHAT;
   // The current 维权 case is caseMessages plus the dossier fields; caseHistory
   // holds the archived ones.
   @State @Watch('mineOpenChanged') mineOpen: boolean = false;
@@ -286,7 +356,9 @@ struct Index {
     this.loadConfig();
     this.loadReasoningFlags();
     this.loadKnowledge();
-    this.restoreState();
+    this.restoreState().then(() => {
+      this.loadOnboarding();
+    });
     EvidenceStore.load(this.abilityContext()).then((items: EvidenceItem[]) => {
       this.evidenceCount = items.length;
     }).catch(() => {
@@ -295,6 +367,16 @@ struct Index {
     ContractReviewService.load(this.abilityContext()).then((reports: ContractReport[]) => {
       this.contractReportCount = reports.length;
     });
+    // 演示模式: the finished samples, or 引导式演示 from an empty space.
+    if (this.demo) {
+      DemoData.isSeeded(this.abilityContext()).then((seeded: boolean) => {
+        this.demoBrowse = seeded;
+        this.demoStep = seeded ? 0 : DEMO_STEP_INTRO;
+      });
+      DemoBackups.load(this.abilityContext()).then((backups: DemoBackups) => {
+        this.demoBackups = backups;
+      });
+    }
     // Opened by sharing images into the app: take them once the page is up.
     setTimeout(() => {
       this.onSharedEvidence();
@@ -401,12 +483,373 @@ struct Index {
   private mineOpenChanged(): void {
     this.mineScrolled = false;
     this.syncStatusBar();
+    if (this.mineOpen) {
+      this.completeTask(TASK_SETTINGS);
+    }
+  }
+
+  // A new user (nothing saved yet) sees the welcome pages and the 快速上手
+  // card; someone already using the app is not interrupted.
+  private async loadOnboarding(): Promise<void> {
+    const context: common.UIAbilityContext = this.abilityContext();
+    this.hintsSeen = await ConfigStore.loadNumber(context, HINTS_KEY, 0);
+    // 演示模式 has its own guide; the user's welcome stays as it was.
+    if (this.demo) {
+      return;
+    }
+    if (await ConfigStore.hasFlag(context, ONBOARDED_KEY)) {
+      this.quickstartTasks = await ConfigStore.loadNumber(context, QUICKSTART_KEY, 0);
+      this.quickstartHidden = await ConfigStore.loadFlag(context, QUICKSTART_HIDDEN_KEY, false);
+      this.showHintFor();
+      return;
+    }
+    let evidence: number = 0;
+    let reports: number = 0;
+    try {
+      evidence = (await EvidenceStore.load(context)).length;
+      reports = (await ContractReviewService.load(context)).length;
+    } catch (error) {
+      // Counted as none.
+    }
+    const used: boolean = this.quickHistory.length > 0 || this.hasCaseContent() || evidence > 0 || reports > 0;
+    this.quickstartHidden = used;
+    this.onboardingShown = !used;
+    ConfigStore.saveFlag(context, ONBOARDED_KEY, true).catch(() => {
+    });
+    ConfigStore.saveFlag(context, QUICKSTART_HIDDEN_KEY, used).catch(() => {
+    });
+  }
+
+  // A page shown: the status bar follows it, and its hint shows the first
+  // time.
+  private onPageShown(): void {
+    this.syncStatusBar();
+    this.showHintFor();
+  }
+
+  private showHintFor(): void {
+    if (this.hintsSeen < 0 || this.onboardingShown || this.hintShown !== 0 || this.demoStep !== 0) {
+      return;
+    }
+    let hint: number = 0;
+    if (this.currentSection === AppSection.CONTRACT) {
+      hint = HINT_CONTRACT;
+    } else if (this.currentSection === AppSection.CASE) {
+      hint = this.rightsTab === RIGHTS_EVIDENCE ? HINT_EVIDENCE : HINT_CASE;
+    }
+    if (hint !== 0 && (this.hintsSeen & hint) === 0) {
+      this.hintShown = hint;
+    }
+  }
+
+  private dismissHint(): void {
+    this.hintsSeen = this.hintsSeen | this.hintShown;
+    this.hintShown = 0;
+    ConfigStore.saveNumber(this.abilityContext(), HINTS_KEY, this.hintsSeen).catch(() => {
+    });
+  }
+
+  // 演示模式 on or off: the app restarts on the other set of records.
+  private switchDemo(on: boolean): void {
+    this.getUIContext().showAlertDialog({
+      title: on ? '进入演示模式' : '退出演示模式',
+      message: on ? '应用将重启，载入示例案件、示例合同和示例证据，用于展示功能。你自己的数据不会被改动，退出后恢复。' :
+        '应用将重启并回到你自己的数据，演示中产生的示例数据会被清除。',
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: on ? '进入' : '退出',
+        action: () => {
+          this.restartInto(on);
+        }
+      }
+    });
+  }
+
+  // ---- 引导式演示 ----
+
+  // Moves to a step (or the summary after the last) and shows its page.
+  private goToDemoStep(step: number): void {
+    this.clearDemoTimer();
+    this.demoSlow = false;
+    this.demoDone = false;
+    if (step > DEMO_STEP_COUNT) {
+      this.demoStats.seconds = Math.round((Date.now() - this.demoStartedAt) / 1000);
+      this.demoStats.evidence = this.evidenceCount;
+      this.demoStats.progress = this.caseState.progress;
+      this.demoStep = DEMO_STEP_SUMMARY;
+      return;
+    }
+    this.demoStep = Math.max(DEMO_STEP_QUICK, step);
+    this.endReading();
+    this.mineOpen = false;
+    this.sheetKind = 0;
+    if (this.demoStep === DEMO_STEP_QUICK) {
+      this.currentSection = AppSection.QUICK;
+    } else if (this.demoStep === DEMO_STEP_CASE) {
+      this.currentSection = AppSection.CASE;
+      this.showRights(RIGHTS_CHAT);
+    } else if (this.demoStep === DEMO_STEP_EVIDENCE) {
+      this.currentSection = AppSection.CASE;
+      this.showRights(RIGHTS_EVIDENCE);
+    } else if (this.demoStep === DEMO_STEP_REPORT) {
+      this.currentSection = AppSection.CASE;
+      this.showRights(RIGHTS_DOSSIER);
+    } else {
+      this.currentSection = AppSection.CONTRACT;
+      this.contractMode = CONTRACT_MODE_HOME;
+    }
+  }
+
+  // 填入示例: puts the step's sample input in place; sending stays with the
+  // presenter.
+  private fillDemoStep(): void {
+    this.goToDemoStep(this.demoStep);
+    if (this.demoStep === DEMO_STEP_QUICK) {
+      if (this.quick.messages.length > 0 && !this.quick.sending) {
+        this.returnToQuickHome();
+      }
+      this.quick.input = DEMO_QUESTION;
+    } else if (this.demoStep === DEMO_STEP_CASE) {
+      this.caseChat.input = DEMO_STORY;
+    } else if (this.demoStep === DEMO_STEP_EVIDENCE) {
+      if (this.evidenceCount > 0) {
+        this.getUIContext().getPromptAction().showToast({ message: '示例证据已在证据库里' });
+        return;
+      }
+      DemoData.sampleImages(this.abilityContext(), KnockShare.inbox(this.abilityContext())).then((uris: string[]) => {
+        this.receiveEvidence(uris, EVIDENCE_SOURCE_PHOTO);
+      }).catch(() => {
+        this.getUIContext().getPromptAction().showToast({ message: '示例证据没有导入，请重试' });
+      });
+    } else if (this.demoStep === DEMO_STEP_REPORT) {
+      this.caseState.location = DEMO_LOCATION;
+      this.caseState.company = DEMO_COMPANY;
+      if (this.caseState.salary.trim().length === 0) {
+        this.caseState.salary = DEMO_SALARY;
+      }
+      this.caseState.timeline = DEMO_TIMELINE;
+      this.caseState.request = DEMO_REQUEST;
+      this.caseState.details = DEMO_DETAILS;
+      this.updateProgress();
+      this.schedulePersist();
+    } else if (this.demoStep === DEMO_STEP_CONTRACT) {
+      this.contractDemoSeq += 1;
+    }
+  }
+
+  // After sending on the step's page: offer the backup if the model says
+  // nothing for a while.
+  private demoWatch(step: number, kind: number): void {
+    if (this.demoStep !== step) {
+      return;
+    }
+    this.demoUsingBackup = false;
+    this.demoSlow = false;
+    this.clearDemoTimer();
+    this.demoTimer = setTimeout(() => {
+      this.demoTimer = -1;
+      const session: ChatSession = this.session(kind);
+      if (this.demoStep === step && session.sending && session.streaming.length === 0 &&
+        session.reasoning.length === 0) {
+        this.demoSlow = true;
+      }
+    }, DEMO_BACKUP_AFTER_MS);
+  }
+
+  private clearDemoTimer(): void {
+    if (this.demoTimer !== -1) {
+      clearTimeout(this.demoTimer);
+      this.demoTimer = -1;
+    }
+  }
+
+  // A conversation step finished: answered live, or failed (backup offered).
+  private demoAnswered(step: number, chat: ChatSession): void {
+    if (this.demoStep !== step || this.demoUsingBackup) {
+      return;
+    }
+    const last: ChatMessage | undefined = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : undefined;
+    if (last !== undefined && last.role === ChatRole.ASSISTANT) {
+      this.demoLiveDone(step);
+    } else if (chat.error.length > 0) {
+      this.demoFailed(step);
+    }
+  }
+
+  private demoLiveDone(step: number): void {
+    if (this.demoStep !== step || this.demoUsingBackup || this.demoDone) {
+      return;
+    }
+    this.clearDemoTimer();
+    this.demoSlow = false;
+    this.demoDone = true;
+    this.demoStats.liveCalls += 1;
+  }
+
+  private demoFailed(step: number): void {
+    if (this.demoStep === step && !this.demoDone) {
+      this.clearDemoTimer();
+      this.demoSlow = true;
+    }
+  }
+
+  private demoHasBackup(): boolean {
+    if (this.demoStep === DEMO_STEP_QUICK) {
+      return this.demoBackups.quick !== undefined;
+    }
+    if (this.demoStep === DEMO_STEP_CASE) {
+      return this.demoBackups.caseReply !== undefined;
+    }
+    return this.demoStep === DEMO_STEP_REPORT && this.demoBackups.report.length > 0;
+  }
+
+  // 使用备用结果: stops the call and shows the answer recorded from a real
+  // call earlier, marked as such.
+  private async useDemoBackup(): Promise<void> {
+    const step: number = this.demoStep;
+    const kind: number = step === DEMO_STEP_QUICK ? STREAM_QUICK : step === DEMO_STEP_CASE ? STREAM_CASE : STREAM_REPORT;
+    this.demoUsingBackup = true;
+    this.clearDemoTimer();
+    this.stopStream(kind);
+    for (let i: number = 0; i < 30 && this.session(kind).sending; i++) {
+      await new Promise<void>((resolve: () => void) => {
+        setTimeout(resolve, 100);
+      });
+    }
+    if (step === DEMO_STEP_QUICK) {
+      this.quick.error = '';
+      this.quick.messages = this.withBackup(this.quick.messages, DEMO_QUESTION, this.demoBackups.quick!);
+      this.recordQuickSession();
+    } else if (step === DEMO_STEP_CASE) {
+      this.caseChat.error = '';
+      this.caseChat.messages = this.withBackup(this.caseChat.messages, DEMO_STORY, this.demoBackups.caseReply!);
+    } else {
+      this.reportRun.error = '';
+      this.caseState.report = DEMO_BACKUP_MARK + this.demoBackups.report;
+      this.caseState.reportCitations = this.demoBackups.reportCitations;
+      this.reportStage = 4;
+    }
+    this.schedulePersist();
+    this.demoStats.backups += 1;
+    this.demoSlow = false;
+    this.demoDone = true;
+  }
+
+  // The question (if the stopped call never added it) and the backup answer.
+  private withBackup(messages: ChatMessage[], question: string, reply: ChatMessage): ChatMessage[] {
+    let next: ChatMessage[] = messages;
+    const last: ChatMessage | undefined = next.length > 0 ? next[next.length - 1] : undefined;
+    if (last === undefined || last.role !== ChatRole.USER) {
+      next = next.concat([new ChatMessage(ChatRole.USER, question)]);
+    }
+    return next.concat([reply]);
+  }
+
+  // The step's call is under way.
+  private demoBusy(): boolean {
+    if (this.demoStep === DEMO_STEP_QUICK) {
+      return this.quick.sending;
+    }
+    if (this.demoStep === DEMO_STEP_CASE) {
+      return this.caseChat.sending;
+    }
+    return this.demoStep === DEMO_STEP_REPORT && this.reportRun.sending;
+  }
+
+  // The step card steps aside while reading immersively and under cards.
+  private demoHidden(): boolean {
+    return this.onboardingShown || this.mineOpen || this.quick.immersive || this.caseChat.immersive;
+  }
+
+  // Under the title bar of the page the step is on: what to tap is lower down.
+  private demoCardAt(): Edges {
+    const segments: number = this.currentSection === AppSection.CASE && !this.env.split() ? RIGHTS_SEGMENT_HEIGHT : 0;
+    return { left: 0, top: this.statusBarHeight + TITLE_ROW_HEIGHT + segments + 8 };
+  }
+
+  // 再演示一遍: an empty demo space again.
+  private async restartDemoFresh(): Promise<void> {
+    const context: common.UIAbilityContext = this.abilityContext();
+    try {
+      await DataSpace.clearDemo(context);
+      context.getApplicationContext().restartApp({
+        bundleName: context.abilityInfo.bundleName,
+        abilityName: context.abilityInfo.name
+      });
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: '重新开始没有完成，请稍后再试' });
+    }
+  }
+
+  private async restartInto(on: boolean): Promise<void> {
+    const context: common.UIAbilityContext = this.abilityContext();
+    try {
+      this.persistNow();
+      await DataSpace.setDemo(context, on);
+      if (!on) {
+        await DataSpace.clearDemo(context);
+      }
+      context.getApplicationContext().restartApp({
+        bundleName: context.abilityInfo.bundleName,
+        abilityName: context.abilityInfo.name
+      });
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: '切换没有完成，请稍后再试' });
+    }
+  }
+
+  private completeTask(task: number): void {
+    if (this.quickstartHidden || (this.quickstartTasks & task) !== 0) {
+      return;
+    }
+    this.quickstartTasks = this.quickstartTasks | task;
+    ConfigStore.saveNumber(this.abilityContext(), QUICKSTART_KEY, this.quickstartTasks).catch(() => {
+    });
+  }
+
+  private hideQuickstart(): void {
+    this.quickstartHidden = true;
+    ConfigStore.saveFlag(this.abilityContext(), QUICKSTART_HIDDEN_KEY, true).catch(() => {
+    });
+  }
+
+  private resetQuickstart(): void {
+    this.quickstartTasks = 0;
+    this.quickstartHidden = false;
+    this.hintsSeen = 0;
+    ConfigStore.saveNumber(this.abilityContext(), HINTS_KEY, 0).catch(() => {
+    });
+    ConfigStore.saveNumber(this.abilityContext(), QUICKSTART_KEY, 0).catch(() => {
+    });
+    ConfigStore.saveFlag(this.abilityContext(), QUICKSTART_HIDDEN_KEY, false).catch(() => {
+    });
+  }
+
+  // 去试试 on a task: takes the user to where it is done.
+  private tryTask(task: number): void {
+    if (task === TASK_ASK) {
+      this.quick.input = '试用期被辞退，公司需要给补偿吗？';
+    } else if (task === TASK_CASE) {
+      this.currentSection = AppSection.CASE;
+      this.showRights(RIGHTS_CHAT);
+    } else if (task === TASK_CONTRACT) {
+      this.currentSection = AppSection.CONTRACT;
+      this.contractMode = CONTRACT_MODE_HOME;
+    } else {
+      this.mineOpen = true;
+    }
   }
 
   private syncStatusBar(): void {
-    const light: boolean = this.drawer.open || (this.currentSection === AppSection.QUICK && this.quick.scrolled) ||
+    // The welcome pages are blue all over.
+    const light: boolean = !this.onboardingShown && (this.drawer.open || (this.currentSection === AppSection.QUICK && this.quick.scrolled) ||
       (this.currentSection === AppSection.CASE && this.rightsScrolled()) ||
-      (this.currentSection === AppSection.CONTRACT && this.contractScrolled) || (this.mineOpen && this.mineScrolled);
+      (this.currentSection === AppSection.CONTRACT && this.contractScrolled) || (this.mineOpen && this.mineScrolled));
     if (light !== this.statusOverLight) {
       this.statusOverLight = light;
       this.applySystemBar();
@@ -1098,6 +1541,8 @@ struct Index {
       this.quick.error = '本地法律资料尚未就绪，请稍后再试';
       return;
     }
+    this.completeTask(TASK_ASK);
+    this.demoWatch(DEMO_STEP_QUICK, STREAM_QUICK);
     const quotaError: string = this.takeModelRequest();
     if (quotaError.length > 0) {
       this.quick.error = quotaError;
@@ -1151,6 +1596,7 @@ struct Index {
       }
       this.recordQuickSession();
       this.schedulePersist();
+      this.demoAnswered(DEMO_STEP_QUICK, this.quick);
     }
   }
 
@@ -1171,6 +1617,8 @@ struct Index {
       this.caseChat.error = '本地法律资料尚未就绪，请稍后再试';
       return;
     }
+    this.completeTask(TASK_CASE);
+    this.demoWatch(DEMO_STEP_CASE, STREAM_CASE);
     const quotaError: string = this.takeModelRequest();
     if (quotaError.length > 0) {
       this.caseChat.error = quotaError;
@@ -1216,6 +1664,7 @@ struct Index {
         this.streamHandles[STREAM_CASE] = undefined;
       }
       this.schedulePersist();
+      this.demoAnswered(DEMO_STEP_CASE, this.caseChat);
     }
   }
 
@@ -1536,6 +1985,9 @@ struct Index {
       this.caseState.company = value;
     } else if (field === 2) {
       this.caseState.salary = value;
+      if (this.demoStep === DEMO_STEP_EVIDENCE) {
+        this.demoDone = true;
+      }
     } else if (field === 3) {
       this.caseState.timeline = value;
     } else {
@@ -1727,6 +2179,65 @@ struct Index {
     this.mineActions.saveAutoExpand = (value: boolean) => {
       this.saveReasoningFlag(EXPAND_REASONING_KEY, value);
     };
+    this.mineActions.replayOnboarding = () => {
+      this.mineOpen = false;
+      this.onboardingShown = true;
+    };
+    this.mineActions.resetQuickstart = () => {
+      this.resetQuickstart();
+      this.mineOpen = false;
+      this.currentSection = AppSection.QUICK;
+    };
+    this.onboardingActions.finish = () => {
+      this.onboardingShown = false;
+      this.showHintFor();
+    };
+    this.mineActions.setDemo = (on: boolean) => {
+      this.switchDemo(on);
+    };
+    this.demoActions.start = () => {
+      this.demoStartedAt = Date.now();
+      this.demoStats = new DemoStats();
+      this.goToDemoStep(DEMO_STEP_QUICK);
+    };
+    this.demoActions.browse = () => {
+      DemoData.seed(this.abilityContext()).then(() => {
+        this.restartInto(true);
+      }).catch(() => {
+        this.getUIContext().getPromptAction().showToast({ message: '示例结果没有载入，请重试' });
+      });
+    };
+    this.demoActions.exit = () => {
+      this.switchDemo(false);
+    };
+    this.demoActions.fill = () => {
+      this.fillDemoStep();
+    };
+    this.demoActions.next = () => {
+      this.goToDemoStep(this.demoStep + 1);
+    };
+    this.demoActions.prev = () => {
+      this.goToDemoStep(this.demoStep - 1);
+    };
+    this.demoActions.useBackup = () => {
+      this.useDemoBackup();
+    };
+    this.demoActions.keepWaiting = () => {
+      this.demoSlow = false;
+    };
+    this.demoActions.restart = () => {
+      this.restartDemoFresh();
+    };
+    this.demoActions.review = () => {
+      this.demoCardSmall = false;
+      this.demoStep = DEMO_STEP_REVIEW;
+    };
+    this.demoActions.summary = () => {
+      this.demoStep = DEMO_STEP_SUMMARY;
+    };
+    this.onboardingActions.setBuiltin = (value: boolean) => {
+      this.setUseBuiltin(value);
+    };
   }
 
   private openCitationDetail(content: string, citations: LawCitation[], index: number): void {
@@ -1848,6 +2359,7 @@ struct Index {
     this.reportRun.sending = true;
     this.reportRun.error = '';
     this.reportStage = 1;
+    this.demoWatch(DEMO_STEP_REPORT, STREAM_REPORT);
     const handle: StreamHandle = this.beginStream(STREAM_REPORT);
     try {
       const summary: string = ConversationPrompts.dossierSummary(this.currentDossier());
@@ -1877,10 +2389,12 @@ struct Index {
       this.caseState.report = this.finalAnswer(outcome, knowledge.citations);
       this.caseState.reportCitations = knowledge.citations;
       this.reportStage = 4;
+      this.demoLiveDone(DEMO_STEP_REPORT);
     } catch (error) {
       this.returnModelRequest();
       this.reportRun.error = this.errorMessage(error);
       this.reportStage = 0;
+      this.demoFailed(DEMO_STEP_REPORT);
     } finally {
       this.reportRun.sending = false;
       if (this.streamHandles[STREAM_REPORT] === handle) {
@@ -3015,6 +3529,7 @@ struct Index {
       contractCount: this.contractReportCount,
       busy: this.quick.sending || this.caseChat.sending || this.reportRun.sending,
       actions: this.mineActions,
+      demo: this.demo,
       statusBarHeight: this.statusBarHeight,
       onScrolledChange: (scrolled: boolean) => {
         this.mineScrolled = scrolled;
@@ -3025,6 +3540,7 @@ struct Index {
   @Builder
   private ContractPane() {
     ContractReview({
+      demoSampleSeq: this.contractDemoSeq,
       cx: this.env.cx,
       isDark: this.env.isDark,
       lightLevel: this.env.lightLevel,
@@ -3047,6 +3563,10 @@ struct Index {
         this.setTabBarHidden(reading);
       },
       onCountChange: (count: number) => {
+        if (count > this.contractReportCount) {
+          this.completeTask(TASK_CONTRACT);
+          this.demoLiveDone(DEMO_STEP_CONTRACT);
+        }
         this.contractReportCount = count;
       },
       baseUrl: this.env.config().baseUrl,
@@ -3322,6 +3842,228 @@ struct Index {
     .margin({ top: -14 })
   }
 
+  // 演示模式: these are samples, and the way back.
+  @Builder
+  private DemoBanner() {
+    Row({ space: 10 }) {
+      Text('演示')
+        .fontSize(11)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.env.cx.onGold)
+        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+        .backgroundColor(this.env.cx.gold)
+        .borderRadius(999)
+      Text('正在查看示例结果：维权案件、分析报告、合同报告和三份证据')
+        .fontSize(12.5)
+        .lineHeight(18)
+        .fontColor(this.env.cx.text)
+        .layoutWeight(1)
+      Text('退出')
+        .fontSize(12.5)
+        .fontColor(this.env.cx.brand)
+        .onClick(() => {
+          this.switchDemo(false);
+        })
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor(this.env.isDark ? '#2A2416' : '#F6EAD2')
+    .borderRadius(14)
+  }
+
+  // A one-time hint the first time 维权, its evidence or 合同 opens: what to
+  // do there, near where it is done.
+  @Builder
+  private HintBubble() {
+    Stack({ alignContent: this.hintShown === HINT_CASE && !this.env.split() ? Alignment.Bottom : Alignment.Top }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#59000000')
+        .onClick(() => {
+          this.dismissHint();
+        })
+      Column({ space: 8 }) {
+        Text(this.hintTitle())
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+          .width('100%')
+        Text(this.hintText())
+          .fontSize(13)
+          .lineHeight(20)
+          .fontColor('#DDE6F2')
+          .width('100%')
+        Row() {
+          Blank()
+          Text('知道了')
+            .fontSize(13.5)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.env.cx.glow)
+            .padding({ left: 8, top: 4, bottom: 4 })
+            .onClick(() => {
+              this.dismissHint();
+            })
+        }
+        .width('100%')
+      }
+      .padding({ left: 16, right: 16, top: 14, bottom: 10 })
+      .backgroundColor('#F216233A')
+      .borderRadius(16)
+      .shadow({ radius: 18, color: '#40000000', offsetY: 6 })
+      .constraintSize({ maxWidth: 420 })
+      .margin(this.hintMargin())
+    }
+    .width('100%')
+    .height('100%')
+    .transition(TransitionEffect.OPACITY.animation({ duration: this.env.reduceMotion ? 0 : 200 }))
+  }
+
+  private hintTitle(): string {
+    if (this.hintShown === HINT_CONTRACT) {
+      return '合同体检';
+    }
+    return this.hintShown === HINT_EVIDENCE ? '证据库' : '梳理案件';
+  }
+
+  private hintText(): string {
+    if (this.hintShown === HINT_CONTRACT) {
+      return '选择合同文件，或点「用示例合同试试」。规则审查在本机完成，逐条标出风险条款和依据；点标红处查看问题详情。';
+    }
+    if (this.hintShown === HINT_EVIDENCE) {
+      return '点右上角 ＋ 扫描纸质材料或从相册导入。图片在本机识别文字并自动分类，识别出的工资、单位等可以一键填入卷宗。';
+    }
+    return this.env.split() ? '在左边像聊天一样说经过，我会分析问题并追问还缺什么；右边的卷宗填写六项要素，达到 60% 就能生成分析报告。' :
+      '在下面像聊天一样说经过，我会分析问题并追问还缺什么。到「卷宗」页填写六项要素（证据里识别出的信息可一键填入），达到 60% 就能生成分析报告。';
+  }
+
+  // Near what the hint is about without covering it: above the composer,
+  // under the evidence library's search, under the contract's two choices.
+  private hintMargin(): Margin {
+    const bar: number = this.statusBarHeight + TITLE_ROW_HEIGHT;
+    if (this.hintShown === HINT_CASE) {
+      return this.env.split() ? { left: 20, right: 20, top: bar + 24 } :
+        { left: 20, right: 20, bottom: TAB_BAR_CLEARANCE + 96 };
+    }
+    if (this.hintShown === HINT_EVIDENCE) {
+      return { left: 20, right: 20, top: bar + (this.env.split() ? 0 : RIGHTS_SEGMENT_HEIGHT) + 150 };
+    }
+    return { left: 20, right: 20, top: bar + 200 };
+  }
+
+  // 快速上手: four things to try, ticked off as the user does them.
+  @Builder
+  private QuickstartCard() {
+    Column({ space: 4 }) {
+      Row({ space: 8 }) {
+        Text('快速上手')
+          .fontSize(16)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.env.cx.text)
+          .layoutWeight(1)
+        Text(this.taskCount().toString() + ' / 4')
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.env.cx.goldDeep)
+        Text('✕')
+          .fontSize(14)
+          .fontColor(this.env.cx.faint)
+          .padding({ left: 6, top: 2, bottom: 2 })
+          .accessibilityText('收起快速上手')
+          .onClick(() => {
+            this.hideQuickstart();
+          })
+      }
+      .width('100%')
+      Stack({ alignContent: Alignment.Start }) {
+        Row()
+          .width('100%')
+          .height(4)
+          .borderRadius(2)
+          .backgroundColor(this.env.cx.surface2)
+        Row()
+          .width((this.taskCount() * 25).toString() + '%')
+          .height(4)
+          .borderRadius(2)
+          .backgroundColor(this.env.cx.gold)
+          .animation({ duration: this.env.reduceMotion ? 0 : 260, curve: Curve.EaseOut })
+      }
+      .width('100%')
+      .margin({ top: 4, bottom: 4 })
+      if (this.quickstartTasks === TASKS_ALL) {
+        Text('都试过了，开始使用吧。随时可以在「我的」里重新查看引导。')
+          .fontSize(12.5)
+          .lineHeight(19)
+          .fontColor(this.env.cx.muted)
+          .width('100%')
+          .padding({ top: 4 })
+      } else {
+        this.TaskRow(TASK_ASK, '问一个法律问题', '答案会附上法条依据')
+        this.TaskRow(TASK_CASE, '开始一个维权案件', '说说经过，自动整理卷宗')
+        this.TaskRow(TASK_CONTRACT, '做一次合同体检', '没有合同？用示例合同试试')
+        this.TaskRow(TASK_SETTINGS, '看看「我的」', '模型服务、外观和本机数据')
+      }
+    }
+    .width('100%')
+    .padding({ left: 16, right: 14, top: 14, bottom: 8 })
+    .backgroundColor(this.env.cx.surface)
+    .borderRadius(18)
+    .border({ width: 1, color: this.env.cx.line })
+    .shadow({ radius: 12, color: this.env.cx.cardShadow, offsetY: 4 })
+  }
+
+  @Builder
+  private TaskRow(task: number, title: string, detail: string) {
+    Row({ space: 10 }) {
+      Text((this.quickstartTasks & task) !== 0 ? '✓' : '')
+        .fontSize(11)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(Color.White)
+        .textAlign(TextAlign.Center)
+        .width(20)
+        .height(20)
+        .borderRadius(10)
+        .backgroundColor((this.quickstartTasks & task) !== 0 ? this.env.cx.ok : Color.Transparent)
+        .border({ width: (this.quickstartTasks & task) !== 0 ? 0 : 1.5, color: this.env.cx.faint })
+      Column({ space: 2 }) {
+        Text(title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor((this.quickstartTasks & task) !== 0 ? this.env.cx.faint : this.env.cx.text)
+          .decoration({ type: (this.quickstartTasks & task) !== 0 ? TextDecorationType.LineThrough :
+            TextDecorationType.None })
+        Text(detail)
+          .fontSize(11)
+          .fontColor(this.env.cx.muted)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      if ((this.quickstartTasks & task) === 0) {
+        Text('去试试 ›')
+          .fontSize(12.5)
+          .fontColor(this.env.cx.brand)
+      }
+    }
+    .width('100%')
+    .padding({ top: 9, bottom: 9 })
+    .border({ width: { top: 1 }, color: { top: this.env.cx.line } })
+    .onClick(() => {
+      if ((this.quickstartTasks & task) === 0) {
+        this.tryTask(task);
+      }
+    })
+  }
+
+  private taskCount(): number {
+    let count: number = 0;
+    [TASK_ASK, TASK_CASE, TASK_CONTRACT, TASK_SETTINGS].forEach((task: number) => {
+      if ((this.quickstartTasks & task) !== 0) {
+        count++;
+      }
+    });
+    return count;
+  }
+
   @Builder
   private QuickPage() {
     Row() {
@@ -3428,6 +4170,12 @@ struct Index {
   @Builder
   private QuickHome() {
     this.QuickHero()
+    if (this.demoBrowse) {
+      this.DemoBanner()
+    }
+    if (!this.quickstartHidden) {
+      this.QuickstartCard()
+    }
     if (this.quick.messages.length === 0) {
       this.Composer()
       // Right under the question it is about, where it is seen.
@@ -3658,6 +4406,49 @@ struct Index {
 
       if (this.knockShown) {
         this.KnockOverlay()
+      }
+      if (this.hintShown !== 0) {
+        this.HintBubble()
+      }
+      if (((this.demoStep >= DEMO_STEP_QUICK && this.demoStep <= DEMO_STEP_COUNT) || this.demoStep === DEMO_STEP_REVIEW) &&
+        !this.demoHidden()) {
+        // Only the card takes touches; the page around it stays usable.
+        Column() {
+          DemoStepCard({
+            step: this.demoStep,
+            done: this.demoDone,
+            slow: this.demoSlow,
+            busy: this.demoBusy(),
+            hasBackup: this.demoHasBackup(),
+            review: this.demoStep === DEMO_STEP_REVIEW,
+            offsetX: $demoCardX,
+            offsetY: $demoCardY,
+            collapsed: $demoCardSmall,
+            actions: this.demoActions
+          })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Center)
+        .padding({ left: 12, right: 12 })
+        .position(this.demoCardAt())
+        .transition(TransitionEffect.OPACITY.animation({ duration: this.env.reduceMotion ? 0 : 200 }))
+      }
+      if (this.demoStep === DEMO_STEP_INTRO || this.demoStep === DEMO_STEP_SUMMARY) {
+        DemoCover({
+          statusBarHeight: this.statusBarHeight,
+          summary: this.demoStep === DEMO_STEP_SUMMARY,
+          stats: this.demoStats,
+          callsLeft: this.env.usingBuiltin() ? ModelQuota.remaining(this.env.quotaUsed) : -1,
+          actions: this.demoActions
+        })
+          .transition(TransitionEffect.OPACITY.animation({ duration: this.env.reduceMotion ? 0 : 280 }))
+      }
+      if (this.onboardingShown) {
+        Onboarding({
+          statusBarHeight: this.statusBarHeight,
+          actions: this.onboardingActions
+        })
+          .transition(TransitionEffect.OPACITY.animation({ duration: this.env.reduceMotion ? 0 : 280 }))
       }
       if (this.drawer.visible && !this.env.split()) {
         HistoryDrawer({
