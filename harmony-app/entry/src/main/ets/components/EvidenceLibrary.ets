@@ -102,6 +102,12 @@ export struct EvidenceLibrary {
   };
   onAsk: (item: EvidenceItem) => void = (item: EvidenceItem) => {
   };
+  // An image finished recognition, with super-resolution or without.
+  onRecognized: (enhanced: boolean) => void = (enhanced: boolean) => {
+  };
+  // The before/after slider was moved.
+  onCompared: () => void = () => {
+  };
   // Optional starting state when opened from elsewhere (证据核对).
   @Prop initialQuery: string = '';
   @Prop initialCategory: string = '';
@@ -306,6 +312,9 @@ export struct EvidenceLibrary {
     this.items = this.items.map((entry: EvidenceItem) => entry.id === snapshot.id ? snapshot : entry);
     if (snapshot.status === EVIDENCE_DONE || snapshot.status === EVIDENCE_FAILED) {
       this.persist();
+    }
+    if (snapshot.status === EVIDENCE_DONE) {
+      this.onRecognized(snapshot.enhanceState === ENHANCE_DONE);
     }
   }
 
@@ -802,10 +811,14 @@ export struct EvidenceLibrary {
             this.compareSplit = Math.max(0.02, Math.min(0.98, event.fingerList[0].localX / this.compareWidth));
           }
         })
+        .onActionEnd(() => {
+          this.onCompared();
+        })
     )
     .onClick((event: ClickEvent) => {
       if (this.compareWidth > 0) {
         this.compareSplit = Math.max(0.02, Math.min(0.98, event.x / this.compareWidth));
+        this.onCompared();
       }
     })
   }

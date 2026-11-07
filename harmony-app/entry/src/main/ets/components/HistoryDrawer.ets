@@ -190,15 +190,21 @@ export struct HistoryDrawer {
     if (this.docked) {
       Column() {
         this.DockedHeader()
-        Column()
-          .height(16)
-        this.Panel()
+        // The divider starts below the header, so the blue band runs on
+        // into the conversation's without a seam.
+        Column() {
+          Column()
+            .height(16)
+          this.Panel()
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .padding({ bottom: 24 })
+        .border({ width: { right: 1 }, color: this.env.cx.line })
       }
       .width('100%')
       .height('100%')
-      .padding({ bottom: 24 })
       .backgroundColor(this.env.isDark ? '#0E1B30' : '#F7F9FC')
-      .border({ width: { right: 1 }, color: this.env.cx.line })
     } else {
     Stack({ alignContent: Alignment.TopStart }) {
       Column()
@@ -253,7 +259,9 @@ export struct HistoryDrawer {
       .height(this.headerHeight)
       .linearGradient(this.headerBlue ? {
         angle: 118,
-        colors: [[this.env.cx.headerA, 0.0], [this.env.cx.headerB, 1.0]]
+        // Ends in headerA, where the conversation's BrandBar starts, so the
+        // two read as one band.
+        colors: [[this.env.cx.headerB, 0.0], [this.env.cx.headerA, 1.0]]
       } : { angle: 180, colors: [[this.env.cx.surface, 0.0], [this.env.cx.surface, 1.0]] })
       .animation({ duration: this.env.reduceMotion ? 0 : 220, curve: Curve.EaseOut })
   }

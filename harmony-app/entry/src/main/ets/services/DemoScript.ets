@@ -57,13 +57,20 @@ export const DEMO_STEPS: DemoStepText[] = [
     '填入示例问题', '回答好了，点角标看看法条原文。'),
   new DemoStepText('梳理案件', '维权 · 梳理', '把张三的经历像聊天一样告诉应用，它会分析问题并追问还缺什么。点「填入示例」，再点发送。',
     '填入张三的经历', '分析好了。接下来整理证据。'),
-  new DemoStepText('整理证据', '维权 · 证据', '导入三张示例证据（工资条、考勤、聊天截图），在本机识别文字并自动分类。识别完打开工资条，把月薪一键填入卷宗。',
-    '导入示例证据', '证据已整理，月薪已进卷宗。'),
+  new DemoStepText('整理证据', '维权 · 证据', '导入三张示例证据，在本机识别并自动分类。工资条是聊天里转发的压缩图，会先用鸿蒙 7 图像超分变清晰再识别。',
+    '导入示例证据', '超分让模糊的转发图也能准确识别，月薪已进卷宗。'),
   new DemoStepText('生成分析报告', '维权 · 卷宗', '点「填入示例」补齐卷宗其余几项，再滑到页面底部点「生成案件分析报告」，在弹出的窗口里点「开始生成报告」。',
     '补齐卷宗', '报告生成好了。最后看看合同。'),
   new DemoStepText('合同体检', '合同', '打开示例合同，事实已填好、AI 深度审查已打开。点「开始审查」，完成后点一处红线看详情。',
     '打开示例合同', '审查完成，点标红处看问题详情。')
 ];
+
+// What step 3 asks for, ticked off on the step card: the payslip, a
+// compressed copy forwarded in a chat, is enhanced and recognized; the
+// before/after slider is tried; the monthly pay goes into the dossier. Only
+// the last one finishes the step.
+export const DEMO_EVIDENCE_TASKS: string[] = ['工资条超分并识别完成', '打开工资条，拖动金色滑块对比超分前后',
+  '把月薪一键填入卷宗'];
 
 // Backup answers recorded from real calls, packaged in rawfile, with the
 // law articles their citation marks point at.

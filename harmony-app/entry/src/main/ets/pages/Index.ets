@@ -242,6 +242,10 @@ struct Index {
   // whether it is done, and whether the model is slow enough to offer a backup.
   @State demoStep: number = 0;
   @State demoDone: boolean = false;
+  // Step 3's tasks before 月薪 is filled: the payslip enhanced and recognized,
+  // the before/after slider tried.
+  @State demoEnhanced: boolean = false;
+  @State demoCompared: boolean = false;
   @State demoSlow: boolean = false;
   @State demoStats: DemoStats = new DemoStats();
   // The step card's place and size, kept from step to step.
@@ -578,6 +582,10 @@ struct Index {
     this.clearDemoTimer();
     this.demoSlow = false;
     this.demoDone = false;
+    if (step !== this.demoStep) {
+      this.demoEnhanced = false;
+      this.demoCompared = false;
+    }
     if (step > DEMO_STEP_COUNT) {
       this.demoStats.seconds = Math.round((Date.now() - this.demoStartedAt) / 1000);
       this.demoStats.evidence = this.evidenceCount;
@@ -3103,6 +3111,16 @@ struct Index {
       onAsk: (item: EvidenceItem) => {
         this.askWithEvidence(item);
       },
+      onRecognized: (enhanced: boolean) => {
+        if (enhanced && this.demoStep === DEMO_STEP_EVIDENCE) {
+          this.demoEnhanced = true;
+        }
+      },
+      onCompared: () => {
+        if (this.demoStep === DEMO_STEP_EVIDENCE) {
+          this.demoCompared = true;
+        }
+      },
       initialQuery: this.evidenceQuery,
       initialCategory: this.evidenceCategory,
       initialImport: this.evidenceImport,
@@ -4424,6 +4442,7 @@ struct Index {
             busy: this.demoBusy(),
             hasBackup: this.demoHasBackup(),
             review: this.demoStep === DEMO_STEP_REVIEW,
+            checks: [this.demoEnhanced, this.demoCompared, this.demoDone],
             offsetX: $demoCardX,
             offsetY: $demoCardY,
             collapsed: $demoCardSmall,

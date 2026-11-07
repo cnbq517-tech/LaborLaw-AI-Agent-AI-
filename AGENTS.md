@@ -187,6 +187,13 @@ only when the user asks.
   backup from `rawfile/demo/backups.json`. Those backups must come from real
   calls: run the demo on a device and pull `files/demo/*.json`; never write
   them by hand. Backups are marked 【备用结果 · 事先真实调用生成】.
+  Step 3 shows 图像超分: the sample `rawfile/demo/payslip.jpg` is a 432×528
+  compressed copy, so import enhances it automatically (short side under
+  1080), and on device its original misreads amounts (2.600.00, 000元) that
+  the enhanced image reads right. A replacement must be checked the same way
+  on a device. The step card ticks off `DEMO_EVIDENCE_TASKS` (enhanced and
+  recognized via `EvidenceLibrary.onRecognized`, slider tried via
+  `onCompared`, 月薪 filled); only the last finishes the step.
 - A `@Builder`'s primitive argument is a copy: a value changed elsewhere does
   not re-render it. Read state inside the builder (`DossierPage.fieldValue`),
   or make the piece a `@Component` with `@Prop`s (`DemoButton`). An overlay
@@ -237,7 +244,10 @@ only when the user asks.
   shows two panes: 普法 history docked left (`HistoryDrawer` `docked`), 维权
   梳理 with 卷宗 / 证据 beside it, the contract text with its findings beside
   it. Components that sit in a pane take a `side` override instead of
-  `env.side()`. On a tablet `EntryAbility` draws everything 12% larger with
+  `env.side()`. The docked history's blue header runs into the conversation's
+  `BrandBar`: its gradient ends in `headerA`, where the `BrandBar` starts, and
+  its right divider starts below the header, or a light seam shows between the
+  panes. On a tablet `EntryAbility` draws everything 12% larger with
   `setCustomDensity` (following the system's display size). Phones are
   unchanged; check both after layout changes.
 - HdsTabs on a wide window puts the bar at one edge and the mini bar (我的) at

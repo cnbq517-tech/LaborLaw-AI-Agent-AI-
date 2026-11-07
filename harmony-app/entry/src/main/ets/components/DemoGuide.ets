@@ -1,5 +1,5 @@
 import { AppEnv } from '../models/AppEnv';
-import { DEMO_STEP_COUNT, DEMO_STEPS, DemoStepText } from '../services/DemoScript';
+import { DEMO_EVIDENCE_TASKS, DEMO_STEP_COUNT, DEMO_STEP_EVIDENCE, DEMO_STEPS, DemoStepText } from '../services/DemoScript';
 import { LIGHT_BUTTON, pointLight } from '../theme/Light';
 
 // The pieces of 引导式演示 on screen: the opening card, the step card that
@@ -76,6 +76,8 @@ export struct DemoStepCard {
   @Prop busy: boolean = false;
   // After the summary: the story is done and the pages are there to look back at.
   @Prop review: boolean = false;
+  // Step 3's tasks done so far, in the order of DEMO_EVIDENCE_TASKS.
+  @Prop checks: boolean[] = [];
   // Where the presenter dragged the card, and whether it is shrunk to a pill;
   // the page keeps these so they last from step to step.
   @Link offsetX: number;
@@ -111,6 +113,31 @@ export struct DemoStepCard {
       return '✓ ' + this.text().done;
     }
     return this.busy ? '正在实时调用模型，回答会逐字出现…' : this.text().body;
+  }
+
+  private showChecks(): boolean {
+    return this.step === DEMO_STEP_EVIDENCE && !this.review && !this.slow;
+  }
+
+  private ticked(index: number): boolean {
+    return this.checks[index] === true;
+  }
+
+  // Reads the tick itself: a value passed into a builder would not redraw.
+  @Builder
+  private Check(index: number) {
+    Row({ space: 7 }) {
+      Text(this.ticked(index) ? '✓' : '○')
+        .fontSize(12)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.ticked(index) ? '#5BD49A' : this.env.cx.glow)
+        .width(14)
+      Text(DEMO_EVIDENCE_TASKS[index])
+        .fontSize(12)
+        .fontColor(this.ticked(index) ? '#B5E6CF' : '#DDE6F2')
+        .layoutWeight(1)
+    }
+    .width('100%')
   }
 
   @Builder
@@ -199,6 +226,16 @@ export struct DemoStepCard {
         .lineHeight(19)
         .fontColor(this.done && !this.slow && !this.review ? '#B5E6CF' : '#DDE6F2')
         .width('100%')
+      if (this.showChecks()) {
+        Column({ space: 3 }) {
+          // Written out rather than in a ForEach, whose rows keep their keys
+          // and would not redraw when a task is ticked.
+          this.Check(0)
+          this.Check(1)
+          this.Check(2)
+        }
+        .width('100%')
+      }
       Row({ space: 8 }) {
         if (this.review) {
           Blank()
