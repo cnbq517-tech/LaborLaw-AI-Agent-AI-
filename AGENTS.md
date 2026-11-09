@@ -78,6 +78,10 @@ only when the user asks.
   support check (API 26 and the device), the material for sheets, dialogs,
   toasts and toggles, the HdsTabs level from 我的 → 光感强度, and the glass look
   for floating controls in the content area. `Light.ets` is the point light.
+  光感强度 defaults to 强 (since 2026-11-09). On ALN-AL00, 自适应 picks a level
+  that turns the title bar buttons a flat frosted white. The setting is stored
+  under `light_level_v2`; the key was renamed so devices that had saved 自适应
+  start at 强 once.
   - `EvidenceStore.ets`, `EvidencePipeline.ets` (save → super-resolution → OCR →
     index), `EvidenceIndex.ets` (textSearchImage), `EvidenceSearch.ets` (text +
     semantic merge), `EvidenceExtractor.ets` (categories, table rows, dossier

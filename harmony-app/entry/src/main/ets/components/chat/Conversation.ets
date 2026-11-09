@@ -248,7 +248,10 @@ export struct Conversation {
       .scrollBar(BarState.Off)
       .width('100%')
       .height('100%')
-      .edgeEffect(EdgeEffect.Spring)
+      // Bounces at the bottom only: pulled down at the top, the blue header
+      // would come away from the top and show the page's white under the
+      // title bar, whose white buttons then vanish.
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false, effectEdge: EffectEdge.END })
       .onAreaChange((oldValue: Area, newValue: Area) => {
         this.chat.viewportHeight = newValue.height as number;
       })

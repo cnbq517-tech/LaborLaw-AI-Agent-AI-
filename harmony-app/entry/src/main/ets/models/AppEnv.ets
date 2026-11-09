@@ -28,7 +28,7 @@ export class AppEnv {
   useBuiltin: boolean = false;
   quotaUsed: number = 0;
   // 光感强度, one of LIGHT_* in theme/Material.
-  lightLevel: number = 0;
+  lightLevel: number = 1; // LIGHT_STRONG, the default
   showReasoning: boolean = true;
   // The window's width in vp.
   windowWidth: number = 0;

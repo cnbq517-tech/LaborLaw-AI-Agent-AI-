@@ -87,7 +87,7 @@ import {
   DemoBackups
 } from '../services/DemoScript';
 import { KnockReceiver, KnockShare } from '../services/KnockShare';
-import { LIGHT_ADAPTIVE, Material } from '../theme/Material';
+import { LIGHT_STRONG, Material } from '../theme/Material';
 import {
   AnswerActionsView,
   AnswerText,
@@ -160,7 +160,8 @@ class StreamOutcome {
 
 const SHOW_REASONING_KEY: string = 'show_reasoning';
 const USE_BUILTIN_KEY: string = 'use_builtin';
-const LIGHT_LEVEL_KEY: string = 'light_level';
+// v2 since 2026-11-09, when the default became 强: every device starts there once.
+const LIGHT_LEVEL_KEY: string = 'light_level_v2';
 const EXPAND_REASONING_KEY: string = 'expand_reasoning';
 // 新手引导: the welcome pages were seen; which 快速上手 tasks are done (bits);
 // the task card was put away.
@@ -1354,7 +1355,7 @@ struct Index {
   private async loadReasoningFlags(): Promise<void> {
     this.env.showReasoning = await ConfigStore.loadFlag(this.abilityContext(), SHOW_REASONING_KEY, true);
     this.env.autoExpandReasoning = await ConfigStore.loadFlag(this.abilityContext(), EXPAND_REASONING_KEY, true);
-    this.env.lightLevel = await ConfigStore.loadNumber(this.abilityContext(), LIGHT_LEVEL_KEY, LIGHT_ADAPTIVE);
+    this.env.lightLevel = await ConfigStore.loadNumber(this.abilityContext(), LIGHT_LEVEL_KEY, LIGHT_STRONG);
   }
 
   private saveReasoningFlag(key: string, value: boolean): void {
