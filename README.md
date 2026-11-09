@@ -1,7 +1,7 @@
-# 劳动权益助手 · LaborLaw AI
+# 劳动法律 AI 智能体 · LaborLaw AI
 
 <p align="center">
-  <img src="docs/contest/assets/laborlaw-ai-app-icon-source.png" width="180" alt="劳动权益助手图标">
+  <img src="docs/contest/assets/laborlaw-ai-app-icon-source.png" width="180" alt="劳动法律 AI 智能体图标">
 </p>
 
 <p align="center">

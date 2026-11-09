@@ -47,8 +47,8 @@ struct LawQuickCard {
     Column() {
       Row() {
         Column() {
-          Text('劳动权益助手')
-            .fontSize(14)
+          Text('劳动法律 AI 智能体')
+            .fontSize(12)
             .fontWeight(FontWeight.Bold)
             .fontColor('#12315E')
             .maxLines(1)
@@ -59,10 +59,10 @@ struct LawQuickCard {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        Text('✦ 小贴士')
-          .fontSize(9)
+        Text('✦')
+          .fontSize(11)
           .fontColor('#1D4B8F')
-          .padding({ left: 7, right: 7, top: 5, bottom: 5 })
+          .padding({ left: 6, right: 6, top: 3, bottom: 3 })
           .backgroundColor('#E8EFFA')
           .borderRadius(9)
           .onClick(() => {

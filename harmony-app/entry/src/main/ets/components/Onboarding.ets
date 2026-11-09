@@ -98,8 +98,8 @@ export struct Onboarding {
   private BrandPage() {
     Column() {
       Blank()
-      Text('劳动权益助手')
-        .fontSize(32)
+      Text('劳动法律 AI 智能体')
+        .fontSize(30)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.env.cx.headerText)
       Text('懂法律，更懂你的难处')

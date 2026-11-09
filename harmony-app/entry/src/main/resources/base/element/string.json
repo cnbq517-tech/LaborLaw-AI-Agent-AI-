@@ -10,7 +10,7 @@
     },
     {
       "name": "EntryAbility_label",
-      "value": "劳动法 AI 助手"
+      "value": "劳动法律 AI 智能体"
     },
     {
       "name": "LawFormAbility_label",
@@ -18,7 +18,7 @@
     },
     {
       "name": "LawFormAbility_desc",
-      "value": "从桌面快速进入劳动法 AI 咨询"
+      "value": "从桌面快速进入劳动法律 AI 智能体"
     },
     {
       "name": "LawQuickCard_display_name",

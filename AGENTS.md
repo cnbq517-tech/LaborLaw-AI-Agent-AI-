@@ -8,6 +8,13 @@ This repository contains two related clients:
 - The competition-oriented native HarmonyOS application in `harmony-app/`
   (HarmonyOS 7, target API 26, compatible API 23).
 
+The HarmonyOS app is named 劳动法律 AI 智能体 (since 2026-11-09): the 普法 hero,
+the onboarding brand page, the desktop card title, the copy footer,
+`app_name` and `EntryAbility_label` (desktop icon label, share sheet) all use
+it. The desktop truncates the icon label to 劳动法律 AI 智… on a phone; the
+team accepted that. The icon image is unchanged. The 2×2 card title is 12vp with the tip chip reduced to ✦ so the
+longer name fits on one line.
+
 The HarmonyOS client runs without a project-owned server. It searches a bundled,
 read-only legal index locally and calls an OpenAI-compatible API: a built-in
 service shipped with the build (100 requests a day per device), or one the user

@@ -3831,7 +3831,7 @@ struct Index {
         .opacity(0.10)
         .margin({ top: 24, right: -14 })
       Column() {
-        Text('劳动权益助手')
+        Text('劳动法律 AI 智能体')
           .fontSize(26)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.env.cx.headerText)

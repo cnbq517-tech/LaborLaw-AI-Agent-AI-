@@ -10,7 +10,7 @@ const EXCERPT_BREAKS: string = '。！？；';
 const MIN_MATCH: number = 6;
 const MAX_MATCH: number = 32;
 const CHIP_PADDING: string = '\u00A0';
-const COPY_FOOTER: string = '—— 来自劳动权益助手，仅供参考，不构成法律意见';
+const COPY_FOOTER: string = '—— 来自劳动法律 AI 智能体，仅供参考，不构成法律意见';
 
 export class AnswerSegment {
   text: string;
