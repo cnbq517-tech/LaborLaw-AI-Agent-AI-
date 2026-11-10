@@ -275,9 +275,12 @@ only when the user asks.
 - A `floatView` (闪控窗, `ROUNDED_RECTANGLE`) gets a system bar drawn over the
   top of its window: collapse, app icon and name, close. `FloatChecklist`
   starts its content `FLOAT_SYSTEM_BAR` (36vp, measured on ALN-AL00) down and
-  has no close button of its own. The window is already at its tallest allowed
-  size, so the six checklist items are a 2×3 grid of 28vp tiles; nothing
-  scrolls.
+  has no close button of its own. The six checklist items are a 2×3 grid of
+  28vp tiles; nothing scrolls. `ChecklistFloatService` sizes the window to the
+  content, 350 × 272vp with the system bar (`getFloatViewLimits` is in px),
+  within the size and ratio limits: a phone's largest window (ALN-AL00, about
+  349vp wide) is about that, a tablet's (MRO-W00, 622 × 467vp) left the
+  content in white space.
 - `Text` with `copyOption` keeps taps for itself (its parent's `onClick` does
   not fire), and a `Span` with `onClick` takes taps for the line around it.
   Give only tappable spans a handler, and route taps on selectable text through

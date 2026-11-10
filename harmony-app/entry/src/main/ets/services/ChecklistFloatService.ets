@@ -1,6 +1,10 @@
 import { abilityAccessCtrl, common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
-import { floatView } from '@kit.ArkUI';
+import { display, floatView } from '@kit.ArkUI';
+
+// The checklist's size in vp: six items in two columns, the button and a note.
+const FLOAT_WIDTH_VP: number = 350;
+const FLOAT_HEIGHT_VP: number = 272;
 
 /** Only six completion flags cross into the floating window; case text never does. */
 export class ChecklistFloatService {
@@ -58,23 +62,27 @@ export class ChecklistFloatService {
       const limits: floatView.FloatViewLimits = floatView.getFloatViewLimits(
         floatView.FloatViewTemplateType.ROUNDED_RECTANGLE
       );
-      const width: number = limits.maxSize.width;
-      let height: number = limits.maxSize.height;
-      // The default rounded window is too short for six checklist entries. Respect
-      // the device's size and aspect-ratio limits while using its tallest layout.
+      // The checklist needs about 350 × 272vp, the system bar included. The phone's largest window is
+      // about that; a tablet's is much larger and left the content floating in
+      // white space, so the window is capped at the content's size.
+      const dp: number = display.getDefaultDisplaySync().densityPixels;
+      const width: number = Math.max(limits.minSize.width, Math.min(limits.maxSize.width, FLOAT_WIDTH_VP * dp));
+      let height: number = Math.max(limits.minSize.height, Math.min(limits.maxSize.height, FLOAT_HEIGHT_VP * dp));
+      // Keep width / height inside one of the allowed ratio ranges, changing the
+      // height only.
       if (limits.ratioLimits.length > 0) {
-        let tallestAllowed: number = 0;
+        const ratio: number = width / height;
+        let best: number = ratio;
+        let bestGap: number = Number.MAX_VALUE;
         limits.ratioLimits.forEach((range: floatView.RatioLimit): void => {
-          if (range.minRatio > 0) {
-            const candidate: number = Math.min(limits.maxSize.height, width / range.minRatio);
-            if (candidate >= limits.minSize.height && width / candidate <= range.maxRatio) {
-              tallestAllowed = Math.max(tallestAllowed, candidate);
-            }
+          const clamped: number = Math.min(Math.max(ratio, range.minRatio), range.maxRatio);
+          const gap: number = Math.abs(clamped - ratio);
+          if (clamped > 0 && gap < bestGap) {
+            bestGap = gap;
+            best = clamped;
           }
         });
-        if (tallestAllowed > 0) {
-          height = tallestAllowed;
-        }
+        height = Math.max(limits.minSize.height, Math.min(limits.maxSize.height, width / best));
       }
       await controller.setWindowSize({ width: Math.round(width), height: Math.round(height) });
       controller.onStateChange((info: floatView.FloatViewStateChangeInfo): void => {
