@@ -272,6 +272,12 @@ only when the user asks.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.
+- A `floatView` (闪控窗, `ROUNDED_RECTANGLE`) gets a system bar drawn over the
+  top of its window: collapse, app icon and name, close. `FloatChecklist`
+  starts its content `FLOAT_SYSTEM_BAR` (36vp, measured on ALN-AL00) down and
+  has no close button of its own. The window is already at its tallest allowed
+  size, so the six checklist items are a 2×3 grid of 28vp tiles; nothing
+  scrolls.
 - `Text` with `copyOption` keeps taps for itself (its parent's `onClick` does
   not fire), and a `Span` with `onClick` takes taps for the line around it.
   Give only tappable spans a handler, and route taps on selectable text through
