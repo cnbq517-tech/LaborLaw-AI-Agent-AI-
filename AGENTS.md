@@ -269,6 +269,12 @@ only when the user asks.
   sheet defaults to a popup by the finger with no mask; use
   `SheetType.CENTER` with `showClose` there, and `Material.dialog(isDark,
   true)` so the page does not show through its text.
+- Narrow phone windows: `Index.fittingBarWidth` caps each floating bar width
+  at the available window width minus both side margins, the 64vp 我的 mini
+  bar and a 12vp gap. Keep the original widths when they fit; keep the tablet
+  layout unchanged. Use `AppEnv.windowWidth` in vp, not physical screen pixels
+  or model-specific checks. Recheck narrow phones and wide/tablet layouts when
+  changing the floating bar, and preserve keyboard hide/show behavior.
 - HdsTabs floating style fields keep their last value when left out of a new
   style: the keyboard style sets `barOpacity: 0`, so the normal style must set
   `barOpacity: 1` or the bar stays invisible after the keyboard closes.

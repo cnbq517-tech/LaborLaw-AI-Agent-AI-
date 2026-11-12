@@ -2507,9 +2507,9 @@ struct Index {
     const t: ThemeColors = this.env.cx;
     return {
       barWidth: {
-        smallWidth: 268,
-        mediumWidth: 330,
-        largeWidth: TABLET_BAR_WIDTH
+        smallWidth: this.fittingBarWidth(268),
+        mediumWidth: this.fittingBarWidth(330),
+        largeWidth: this.fittingBarWidth(TABLET_BAR_WIDTH)
       },
       barSideMargin: this.barSideMargin(),
       barBottomMargin: 30,
@@ -2539,6 +2539,17 @@ struct Index {
         miniBarStyle: HdsBarStyle.COLLAPSE
       }
     };
+  }
+
+  // Reserve room for 我的 and a visible gap on narrow phone windows.
+  // Keep the existing breakpoint widths whenever they already fit.
+  private fittingBarWidth(preferredWidth: number): number {
+    if (this.env.wide() || this.env.windowWidth <= 0) {
+      return preferredWidth;
+    }
+    const availableWidth: number = this.env.windowWidth - this.barSideMargin() * 2 -
+      MINI_BAR_WIDTH - TABLET_BAR_GAP;
+    return Math.max(1, Math.min(preferredWidth, availableWidth));
   }
 
   // On a tablet the bar sits at one edge and 我的 at the other; equal margins
