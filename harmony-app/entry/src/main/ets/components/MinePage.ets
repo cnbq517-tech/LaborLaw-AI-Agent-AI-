@@ -117,7 +117,7 @@ export struct MinePage {
   }
 
   @Builder
-  private SettingsInput(label: string, value: string, placeholder: string, field: number) {
+  private SettingsInput(label: string, placeholder: string, field: number) {
     Column() {
       Text(label)
         .fontSize(12)
@@ -125,7 +125,7 @@ export struct MinePage {
         .width('100%')
         .margin({ bottom: 7 })
       if (field === 0) {
-        TextInput({ text: value, placeholder: placeholder, controller: this.baseUrlController })
+        TextInput({ text: this.env.baseUrl, placeholder: placeholder, controller: this.baseUrlController })
           .type(InputType.Normal)
           .height(46)
           .fontColor(this.env.cx.text)
@@ -139,7 +139,7 @@ export struct MinePage {
             this.env.baseUrl = v;
           })
       } else if (field === 1) {
-        TextInput({ text: value, placeholder: placeholder, controller: this.modelNameController })
+        TextInput({ text: this.env.modelName, placeholder: placeholder, controller: this.modelNameController })
           .type(InputType.Normal)
           .height(46)
           .fontColor(this.env.cx.text)
@@ -153,7 +153,7 @@ export struct MinePage {
             this.env.modelName = v;
           })
       } else {
-        TextInput({ text: value, placeholder: placeholder, controller: this.apiKeyController })
+        TextInput({ text: this.env.apiKey, placeholder: placeholder, controller: this.apiKeyController })
           .type(InputType.Password)
           .height(46)
           .fontColor(this.env.cx.text)
@@ -263,9 +263,9 @@ export struct MinePage {
   @Builder
   private CustomService() {
     Column({ space: 14 }) {
-      this.SettingsInput('Base URL', this.env.baseUrl, 'https://…/v1', 0)
-      this.SettingsInput('模型名称', this.env.modelName, '填写服务商提供的模型 ID', 1)
-      this.SettingsInput('API Key', this.env.apiKey, '输入后将安全保存在本机', 2)
+      this.SettingsInput('Base URL', 'https://…/v1', 0)
+      this.SettingsInput('模型名称', '填写服务商提供的模型 ID', 1)
+      this.SettingsInput('API Key', '输入后将安全保存在本机', 2)
       Row({ space: 6 }) {
         ChatIcon({ res: $r('app.media.ic_shield'), size: 12, color: this.env.cx.ok })
         Text('API Key 使用 Asset Store 加密保存于本机，不写入代码或同步')

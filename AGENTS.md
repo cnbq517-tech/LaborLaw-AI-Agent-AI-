@@ -146,6 +146,11 @@ only when the user asks.
   contract finding sheet's 上一处 / 下一处 and the 维权 segment labels). A builder whose inputs
   change with state (theme colors, for example) must take a single object
   literal so it is passed by reference, like `this.Icon({ res, size, color })`.
+- Editable model settings in `MinePage.SettingsInput` read Base URL, model
+  name, and API Key directly from `AppEnv`, which their change handlers
+  update. Passing the current text as a primitive builder argument can
+  restore stale text when the page refreshes. On device, check that pasted
+  API Key characters remain masked and stay in the field.
 - Object literals cannot construct classes that declare constructors
   (`arkts-no-untyped-obj-literals`); use an `interface` for such parameters.
 - Structural typing is not supported: cast explicitly, e.g.
