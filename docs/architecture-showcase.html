@@ -889,11 +889,15 @@ footer.page-foot {
     <path d="M12 2v20M4 6h16M5 6l-3 8h6L5 6zm14 0l-3 8h6l-3-8zM7 22h10"/>
   </svg>
   <div class="hero-inner">
-    <div class="hero-badge">✦ HarmonyOS 7 (API 26) 原生应用 · 正义蓝 × 鎏金设计语言</div>
-    <h1>劳动法律 AI 智能体 · 架构与代码交互图谱</h1>
+    <div class="hero-badge">✦ PC 原型 → HarmonyOS 7 (API 26) → Android (API 35) · 正义蓝 × 鎏金设计语言</div>
+    <h1>劳动法律 AI 智能体 · 三端架构与代码交互图谱</h1>
     <p class="hero-sub">
-      从早期 Python + LangGraph 桌面原型演进而来的原生鸿蒙端侧应用。坚持<strong>「零自建服务器、重端侧、轻云端」</strong>架构：法规检索、图像超分与 OCR、23 条合同红线审查全部在本机完成，仅在用户主动提交时直连 OpenAI 兼容大模型 API。
+      从早期 Python + LangGraph 桌面原型演进而来，现已覆盖 <strong>HarmonyOS 7 原生版</strong> 与 <strong>Android 端侧版（源码级 100% 复用纯 TS 核心）</strong>。坚持<strong>「零自建服务器、重端侧、轻云端」</strong>架构：法规检索、端侧视觉 OCR、23 条合同红线审查全部在本机完成，仅在用户主动提交时直连 OpenAI 兼容大模型 API。
     </p>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:26px;">
+      <a href="https://github.com/cnbq517-tech/LaborLaw-AI-Agent-AI-/releases/tag/v0.1.0-android" target="_blank" rel="noopener" style="text-decoration:none; background:var(--gold); color:#fff; font-weight:700; font-size:13.5px; padding:9px 18px; border-radius:999px; box-shadow:var(--gold-shadow); display:inline-flex; align-items:center; gap:6px;">⬇ 下载 Android APK (v0.1.0)</a>
+      <a href="https://github.com/cnbq517-tech/LaborLaw-AI-Agent-AI-" target="_blank" rel="noopener" style="text-decoration:none; background:rgba(255,255,255,0.14); border:1px solid rgba(255,255,255,0.28); color:#fff; font-weight:600; font-size:13.5px; padding:9px 18px; border-radius:999px; display:inline-flex; align-items:center; gap:6px;">GitHub 源码仓库 ↗</a>
+    </div>
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-val">0 台</div>
@@ -922,16 +926,17 @@ footer.page-foot {
 <main class="container">
 
   <!-- =========================================================
-       模块 1：PC 原型 -> HarmonyOS 7 演进对比
+       模块 1：PC 原型 -> HarmonyOS 7 -> Android 演进对比
        ========================================================= -->
   <section class="band" id="evolution">
     <div class="section-head">
       <div>
         <div class="section-kicker">01 · Architecture Evolution</div>
-        <h2 class="section-title">从 PC 桌面版到鸿蒙原生版：架构发生了什么质变？</h2>
+        <h2 class="section-title">PC → HarmonyOS 7 → Android：三端架构演进对比</h2>
       </div>
       <div class="seg-control" id="evoSwitch">
-        <button class="seg-btn active" data-evo="harmony" type="button">HarmonyOS 7 现行版</button>
+        <button class="seg-btn active" data-evo="harmony" type="button">HarmonyOS 7 原生版</button>
+        <button class="seg-btn" data-evo="android" type="button">Android APK 版 (新)</button>
         <button class="seg-btn" data-evo="pc" type="button">早期 PC 原型版</button>
       </div>
     </div>
@@ -1166,6 +1171,17 @@ const EVOLUTION_DATA = {
       { title: '安全与密钥', tag: 'Asset Store', gold: true, body: '自定义 API Key 存放在 Asset Store Kit（禁止跨设备同步）；内置服务采用每日 100 次配额 + 失败退还机制。', why: '为什么改：确保敏感凭证受系统硬件级加密保护，同时让新用户开箱即用无需先折腾配置。' }
     ]
   },
+  android: {
+    summary: '基于 Capacitor 6 + Vite + React 19 + TypeScript 构建的 Android 原生端侧版（targetSdk 35）：零改动源码级直接复用 harmony-app/ 的全部纯 TS 核心逻辑与 52MB 法规库，并补齐原生防跨域 SSE、Google ML Kit 离线中文 OCR 与 1:1 鸿蒙视觉复刻。',
+    items: [
+      { title: '核心代码复用', tag: '0 拷贝直连', gold: true, body: '通过 vite.config.ts 的 @harmony/* 路径别名与 6 行 TextDecoder 垫片，直接编译复用合同 23 条规则、法规检索引擎、引用校验与主题 Token。', why: '为什么这样设计：严格不改动 harmony-app/，鸿蒙端更新一条合同规则或法规检索算法，安卓端重新打包即自动同步。' },
+      { title: '防跨域原生流式', tag: 'NativeStreamPlugin', gold: true, body: '在 Android 原生层编写 NativeStreamPlugin.java（HttpURLConnection 后台线程逐行推送 SSE 并支持中断），彻底绕过 WebView CORS 限制。', why: '解决痛点：DeepSeek 等国内 OpenAI 兼容接口在 WebView 下易触发跨域拦截，原生桥接保证 100% 稳定流式输出。' },
+      { title: '端侧离线中文 OCR', tag: 'ML Kit + PdfRenderer', gold: false, body: '集成 Google ML Kit 打包版中文识别与 Android PdfRenderer，支持相册/微信系统分享图片直接入证据库、扫描件 PDF 逐页离线识别。', why: '隐私一致：延续鸿蒙端「原图永不上传、识别字段人工确认填入卷宗」的安全底线，APK 已内置离线模型。' },
+      { title: '52MB 法规检索', tag: 'Web Worker', gold: false, body: '构建脚本同步 rawfile/law_index.json 压缩打包进 APK，运行期由独立 Web Worker 加载与检索，主线程零阻塞。', why: '体验一致：离线秒查 2794 份法规，首页实时展示加载状态与失败一键重试。' },
+      { title: '1:1 视觉复刻', tag: '自适应图标 + SVG', gold: false, body: '按 Android 108dp/72dp 安全区生成自适应桌面图标，直接复用鸿蒙全套原版 SVG，1:1 复刻蓝金天平头图、悬浮毛玻璃底栏与历史侧滑抽屉。', why: '跨端统一：手机端在鸿蒙和安卓上拥有一致的「正义蓝 × 鎏金」视觉质感与交互习惯。' },
+      { title: '发布形态', tag: 'GitHub Releases', gold: true, body: '源码保留在原仓库 android-app/，62MB 成品 APK（含离线法规库与中文 OCR 模型）通过 GitHub Releases v0.1.0-android 直接提供下载。', why: '规范管理：避免把大体积 APK 与密钥塞进 Git 历史，同时方便用户一键下载安装。' }
+    ]
+  },
   pc: {
     summary: '仓库根目录保留的早期 Python 桌面演示版：采用 NiceGUI 桌面界面 + LangGraph 多节点编排 + 本地向量库与 GraphRAG 实验管线，适合作为算法演进对照。',
     items: [
@@ -1206,6 +1222,14 @@ const ARCH_LAYERS = [
       { id: 'dataspace', name: 'DataSpace', sub: '演示模式数据隔离' },
       { id: 'quota', name: 'ModelQuota', sub: '每日 100 次限额与编码' },
       { id: 'citation', name: 'CitationText', sub: '[Kn] 芯片拆分与高亮' }
+    ]
+  },
+  {
+    id: 'android', title: '4. Android 跨端复用层 (android-app/)', badge: 'Capacitor 6 · 原生插件 · 0 改动复用',
+    nodes: [
+      { id: 'android_reuse', name: 'Vite 源码复用', sub: '@harmony/* + 6 行垫片' },
+      { id: 'android_sse', name: 'NativeStreamPlugin', sub: '原生 HTTPS SSE 防跨域' },
+      { id: 'android_ocr', name: 'OnDeviceOcrPlugin', sub: 'ML Kit 离线中文 OCR' }
     ]
   }
 ];
@@ -1484,6 +1508,47 @@ export class ModelQuota {
 static chipLabel(citationIndex: number): string {
   return '\\u00A0' + (citationIndex + 1).toString() + '\\u00A0';
 }`
+  },
+  android_reuse: {
+    path: 'android-app/vite.config.ts & src/shims/arkts-util.ts',
+    title: 'Android 源码级零改动复用机制',
+    role: '当初坚持让鸿蒙纯逻辑远离 @kit 的架构红利在移植安卓时彻底爆发：仅靠 Vite 路径别名与 6 行 Web TextDecoder 垫片，android-app/ 就直接编译复用了 harmony-app/ 的全部合同规则、法规检索引擎与对话逻辑。',
+    upstream: 'android-app/src/workers/knowledge.worker.ts 与四大 React 页面',
+    downstream: 'harmony-app/entry/src/main/ets/contract/*、KnowledgeEngine.ets、Theme.ets',
+    code: `// android-app/src/shims/arkts-util.ts
+// 用浏览器原生 TextDecoder 垫片替代 @kit.ArkTS，零改动复用 KnowledgeEngine.ets
+export const util = {
+  TextDecoder: {
+    create: (encoding: string = 'utf-8') => {
+      const dec = new TextDecoder(encoding);
+      return { decodeToString: (bytes: Uint8Array) => dec.decode(bytes) };
+    }
+  }
+};`
+  },
+  android_sse: {
+    path: 'android-app/android/app/src/main/java/.../NativeStreamPlugin.java',
+    title: 'NativeStreamPlugin · 安卓原生防跨域 SSE 桥接',
+    role: '在 Android 原生层用 HttpURLConnection 后台线程直连 OpenAI 兼容 API，逐行把 SSE 数据块通过 Capacitor 事件推回 WebView，并支持随时取消请求，彻底解决 WebView 下调用国内模型接口的 CORS 跨域拦截。',
+    upstream: 'android-app/src/services/aiClient.ts',
+    downstream: 'Android java.net.HttpURLConnection（直连 HTTPS 大模型端点）',
+    code: `// Capacitor 原生插件：绕过 WebView CORS，实现稳定 SSE 流式输出与中断
+@CapacitorPlugin(name = "NativeStream")
+public class NativeStreamPlugin extends Plugin {
+  // start(): 在后台线程发起 HTTPS 请求，逐行 notifyListeners("chunk", ...)
+  // cancel(): 立即断开底层 HttpURLConnection，保留已到达的文本
+}`
+  },
+  android_ocr: {
+    path: 'android-app/android/app/src/main/java/.../OnDeviceOcrPlugin.java',
+    title: 'OnDeviceOcrPlugin · ML Kit 离线中文 OCR 与 PDF 识别',
+    role: '集成打包版 Google ML Kit 中文文字识别（16.0.1）与 Android PdfRenderer，支持相册/微信系统分享图片入库识别、扫描件 PDF 逐页离线识别，图片全程不离设备。',
+    upstream: 'android-app/src/pages/CasePage.tsx（证据库）& ContractPage.tsx（扫描 PDF）',
+    downstream: 'com.google.mlkit:text-recognition-chinese & android.graphics.pdf.PdfRenderer',
+    code: `// 离线中文 OCR 管线：无需联网、原图不上传云端
+// 1. 图片 / PdfRenderer 渲染页 -> InputImage
+// 2. ChineseTextRecognizerOptions 端侧识别文字与行坐标
+// 3. 交回复用的鸿蒙 EvidenceExtractor.ets 自动分类与提取卷宗字段`
   }
 };
 
@@ -1531,7 +1596,7 @@ const FLOWS = {
 };
 
 const INSIGHTS = [
-  { cat: 'arch', catLabel: '架构解耦', title: '纯 TypeScript 逻辑与 @kit 彻底分家', body: 'contract/ 全目录及 CitationText、ModelQuota、CaseArchive 等模块严禁引入任何鸿蒙 @kit，让 102 个核心单测可以直接在电脑上用 Node 1 秒跑完，开发效率极高。', file: 'tools/harmony/contract-rules/run.sh & logic-tests/run.sh' },
+  { cat: 'arch', catLabel: '架构解耦', title: '纯 TypeScript 逻辑与 @kit 彻底分家', body: 'contract/ 全目录及 CitationText、ModelQuota、CaseArchive 等模块严禁引入任何鸿蒙 @kit，不仅让 102 个核心单测可在电脑上用 Node 1 秒跑完，更让 Android 版仅靠 6 行 TextDecoder 垫片就 100% 源码级复用了全部核心业务！', file: 'tools/harmony/*/run.sh · android-app/src/shims/arkts-util.ts' },
   { cat: 'perf', catLabel: '性能与并发', title: '52MB 法规索引零拷贝移交 Worker', body: '读取 rawfile/law_index.json 后，直接把底层 ArrayBuffer 作为 Transferable 移交给 KnowledgeWorker 子线程解析与检索，彻底避免主线程 JSON.parse 导致的冷启动卡顿。', file: 'services/KnowledgeService.ets · workers/KnowledgeWorker.ets' },
   { cat: 'perf', catLabel: '性能与并发', title: 'Core Vision Kit 单条串行队列防崩溃', body: '鸿蒙 Core Vision Kit 不允许并发调用同一视觉能力（如同时跑两张 OCR）。EvidencePipeline 用静态 Promise 链串行调度所有超分与 OCR 任务，单张异常自动捕获不拖垮队列。', file: 'services/EvidencePipeline.ets' },
   { cat: 'privacy', catLabel: '隐私与风控', title: '三重防幻觉 + 隐私底线设计', body: '1) 回答展示前过滤模型胡编的 [Kn] 编号；2) 合同发送 AI 前端侧正则脱敏且支持预览；3) OCR 识别出的月薪/公司名绝不自动写入卷宗，必须人工点击确认。', file: 'CitationText.ets · ContractPrivacy.ets · EvidenceLibrary.ets' },

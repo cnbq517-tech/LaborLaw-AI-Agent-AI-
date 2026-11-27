@@ -2,8 +2,6 @@
 
 ## 2026-11-27 更新：发布「劳动法律 AI 智能体」Android 初版（v0.1.0-android）
 
-> 说明：当前 `main` 分支尚未合入本地最新鸿蒙 7 源码，直接体验请下载本 Release（`v0.1.0-android`）附件中的 APK；从源码编译需与鸿蒙 7 开发分支代码一起使用。
-
 全部新增代码位于 `android-app/`，文档更新位于 `AGENTS.md` 与 `docs/android-release-notes.md`；**未改动 `harmony-app/` 中的任何现有文件**。
 
 ### 架构与核心复用
