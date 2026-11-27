@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">劳动法律 AI 智能体</string>
+    <string name="title_activity_main">劳动法律 AI 智能体</string>
+    <string name="package_name">com.laborlaw.aiassistant</string>
+    <string name="custom_url_scheme">com.laborlaw.aiassistant</string>
+</resources>

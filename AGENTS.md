@@ -2,11 +2,20 @@
 
 ## Product
 
-This repository contains two related clients:
+This repository contains three related clients:
 
 - The original Python/NiceGUI desktop prototype at the repository root.
 - The competition-oriented native HarmonyOS application in `harmony-app/`
   (HarmonyOS 7, target API 26, compatible API 23).
+- The Android client in `android-app/` (Capacitor 6 + React + TypeScript,
+  target API 35, min API 24), which reuses `harmony-app/`'s pure TypeScript
+  core modules (`KnowledgeEngine`, `CitationText`, `ConversationPrompts`,
+  `ConversationText`, `CaseArchive`, `ModelTuning`, `ThinkTagParser`,
+  `EvidenceExtractor`, `ets/contract/*`) and `law_index.json` without modifying
+  `harmony-app/`. It runs with zero self-hosted server, uses an Android native
+  HTTPS SSE bridge (`NativeStreamPlugin.java`) to avoid WebView CORS issues,
+  and runs Google ML Kit on-device Chinese OCR (`OnDeviceOcrPlugin.java`) for
+  evidence photos and scanned PDFs.
 
 The HarmonyOS app is named 劳动法律 AI 智能体 (since 2026-11-09): the 普法 hero,
 the onboarding brand page, the desktop card title, the copy footer,
@@ -102,8 +111,36 @@ only when the user asks.
 - `tools/harmony/logic-tests/`: cases for the pure conversation and case logic.
 - `tools/harmony/builtin-service/set.sh`: writes the built-in service file from
   a key typed at a hidden prompt (`--remove` deletes it).
+- `docs/architecture-showcase.html` (copied to `docs/index.html` for GitHub
+  Pages): self-contained interactive architecture and code-reading showcase
+  mirroring `Theme.ets` (正义蓝 × 鎏金 light/dark) and `BrandBar`. Pushed to
+  `main` and served via Cloudflare Pages (`laborlaw-ai-showcase.pages.dev`,
+  which fetches `docs/index.html` from `main` with a 5-minute edge cache).
 - `docs/contest/harmonyos7-release-notes.md`: change log with on-device
   verification records. Add an entry for user-visible changes.
+- `docs/android-release-notes.md`: Android client release notes and device
+  verification records.
+- `android-app/`: Capacitor + Vite + React + TypeScript Android application:
+  - `vite.config.ts` & `src/shims/arkts-util.ts`: resolves `@harmony/*` `.ets`
+    modules and `@harmony-media/*` SVGs directly from `harmony-app/` without
+    duplicating or editing HarmonyOS code.
+  - `scripts/sync-assets.mjs`: copies `law_index.json` (52MB) into git-ignored
+    `public/data/law_index.json` before build; never copies
+    `builtin_service.json`.
+  - `src/workers/knowledge.worker.ts` & `src/services/knowledgeClient.ts`:
+    loads and queries the 52MB legal index off the main thread with progress
+    and retry fallback.
+  - `android/app/src/main/java/com/laborlaw/aiassistant/NativeStreamPlugin.java`
+    & `src/services/aiClient.ts`: native `HttpURLConnection` SSE streaming
+    bridge bypassing WebView CORS restrictions.
+  - `android/app/src/main/java/com/laborlaw/aiassistant/OnDeviceOcrPlugin.java`,
+    `MainActivity.java`, `src/services/ocrBridge.ts`,
+    `src/services/evidenceStore.ts`, `src/components/EvidenceLibrary.tsx`:
+    on-device ML Kit Chinese OCR, `PdfRenderer` scanned PDF extraction,
+    IndexedDB local evidence storage, and `ACTION_SEND`/`ACTION_SEND_MULTIPLE`
+    system image share reception.
+  - `src/pages/`: `QuickConsultPage.tsx` (with left slide-out
+    `HistoryDrawer.tsx`), `CasePage.tsx`, `ContractPage.tsx`, `MinePage.tsx`.
 
 ## Safety rules
 
@@ -146,11 +183,6 @@ only when the user asks.
   contract finding sheet's 上一处 / 下一处 and the 维权 segment labels). A builder whose inputs
   change with state (theme colors, for example) must take a single object
   literal so it is passed by reference, like `this.Icon({ res, size, color })`.
-- Editable model settings in `MinePage.SettingsInput` read Base URL, model
-  name, and API Key directly from `AppEnv`, which their change handlers
-  update. Passing the current text as a primitive builder argument can
-  restore stale text when the page refreshes. On device, check that pasted
-  API Key characters remain masked and stay in the field.
 - Object literals cannot construct classes that declare constructors
   (`arkts-no-untyped-obj-literals`); use an `interface` for such parameters.
 - Structural typing is not supported: cast explicitly, e.g.
@@ -359,3 +391,26 @@ For Python changes:
 
 1. Run the relevant test file or `python -m unittest discover -s tests`.
 2. Keep generated corpus files and user data out of Git.
+
+For Android (`android-app/`) changes:
+
+1. Build web assets and sync into the Capacitor Android project:
+
+```bash
+cd android-app && npm run build && npx cap copy android
+```
+
+2. Compile the Debug APK (requires OpenJDK 21 and Android SDK 35; `android/local.properties` stays git-ignored):
+
+```bash
+cd android-app/android && JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew assembleDebug --no-daemon --console=plain
+```
+
+3. Install and launch on a connected Android device via `adb`:
+
+```bash
+$HOME/Library/Android/sdk/platform-tools/adb install -r android-app/android/app/build/outputs/apk/debug/app-debug.apk
+$HOME/Library/Android/sdk/platform-tools/adb shell am start -n com.laborlaw.aiassistant/.MainActivity
+```
+
+4. Do not commit `node_modules/`, `dist/`, `public/data/`, `*.apk`, `*.keystore`, `local.properties`, or API keys. Record verified and unverified items in `docs/android-release-notes.md`.
