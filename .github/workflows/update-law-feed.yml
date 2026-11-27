@@ -1,0 +1,37 @@
+name: Update Labor Law Feed
+
+on:
+  schedule:
+    # 每天北京时间 08:00（UTC 00:00）自动刷新一次普法动态清单
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-feed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build docs/feed.json
+        run: python3 tools/feed_builder/build_feed.py
+
+      - name: Commit and push if items changed
+        run: |
+          if git diff --quiet docs/feed.json; then
+            echo "No changes to docs/feed.json"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/feed.json
+          git commit -m "chore(feed): update daily labor law feed"
+          git push origin HEAD:main

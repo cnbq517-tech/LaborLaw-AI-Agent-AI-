@@ -1,0 +1,75 @@
+{
+  "description": "劳动法律权益资讯源配置：支持 RSS/Atom 订阅源与人工精选条目（含公众号原文链接），只存元数据与摘要，不抓取他人全文。",
+  "maxItems": 60,
+  "feeds": [
+    {
+      "name": "中国政府网 · 政策解读",
+      "url": "https://www.gov.cn/zhengce/jiedu/rss.xml",
+      "defaultCategory": "政策",
+      "filterLaborOnly": true,
+      "enabled": true
+    }
+  ],
+  "curated": [
+    {
+      "id": "curated-2026-overtime-invisible",
+      "title": "下班后微信回消息算加班吗？「隐形加班」认定标准与取证要点",
+      "source": "最高人民法院典型案例解读",
+      "category": "加班",
+      "publishedAt": "2026-11-26",
+      "summary": "司法实践以「提供实质性劳动」和「明显占用休息时间」为核心标准认定隐形加班。劳动者应留存微信沟通记录、任务派发截图、打卡及工作成果提交时间线。",
+      "url": "https://www.court.gov.cn/",
+      "relatedLaws": ["《中华人民共和国劳动法》第四十四条", "《中华人民共和国劳动合同法》第三十一条"]
+    },
+    {
+      "id": "curated-2026-no-contract-double-wage",
+      "title": "入职超过一个月未签书面劳动合同，二倍工资差额怎么算、时效怎么起算？",
+      "source": "人社部劳动关系普法",
+      "category": "合同",
+      "publishedAt": "2026-11-24",
+      "summary": "用工满一个月次日起至满一年前一日止，未签书面劳动合同可主张每月二倍工资差额（最多 11 个月）。注意仲裁时效为 1 年，建议尽早固定入职记录、工资流水与考勤。",
+      "url": "https://www.mohrss.gov.cn/",
+      "relatedLaws": ["《中华人民共和国劳动合同法》第十条", "《中华人民共和国劳动合同法》第八十二条"]
+    },
+    {
+      "id": "curated-2026-probation-illegal-dismissal",
+      "title": "试用期被以「不符合录用条件」辞退，公司需要拿出哪些硬证据？",
+      "source": "劳动争议实务指引",
+      "category": "试用期",
+      "publishedAt": "2026-11-21",
+      "summary": "单位不能仅凭主观评价辞退试用期员工，必须证明已事先书面告知明确录用条件、在试用期内完成客观考核且留存送达记录；否则构成违法解除，需支付 2N 赔偿金。",
+      "url": "https://www.mohrss.gov.cn/",
+      "relatedLaws": ["《中华人民共和国劳动合同法》第二十一条", "《中华人民共和国劳动合同法》第三十九条", "《中华人民共和国劳动合同法》第八十七条"]
+    },
+    {
+      "id": "curated-2026-unpaid-wage-channels",
+      "title": "遭遇拖欠工资怎么办？劳动监察投诉、调解与仲裁全流程维权清单",
+      "source": "人社部根治欠薪专栏",
+      "category": "欠薪",
+      "publishedAt": "2026-11-18",
+      "summary": "遇到克扣或无故拖欠工资，可同步准备劳动合同、工资条、银行流水、考勤与催薪聊天记录，通过全国根治欠薪线索反映平台、12333 热线或当地劳动仲裁委依法维权。",
+      "url": "https://www.mohrss.gov.cn/",
+      "relatedLaws": ["《中华人民共和国劳动法》第五十条", "《中华人民共和国劳动合同法》第三十条", "《工资支付暂行规定》"]
+    },
+    {
+      "id": "curated-2026-social-insurance-waiver",
+      "title": "签了「自愿放弃社保声明」有效吗？补缴社保与被迫离职经济补偿解析",
+      "source": "人社政策权威问答",
+      "category": "社保",
+      "publishedAt": "2026-11-14",
+      "summary": "缴纳社会保险是用人单位和劳动者的法定义务，任何「自愿放弃社保」或以现金补贴代替社保的约定均属无效。单位未依法缴纳社保的，劳动者可据此解除合同并主张经济补偿。",
+      "url": "https://www.mohrss.gov.cn/",
+      "relatedLaws": ["《中华人民共和国社会保险法》第五十八条", "《中华人民共和国劳动合同法》第三十八条"]
+    },
+    {
+      "id": "curated-2026-illegal-transfer-paycut",
+      "title": "公司单方调岗降薪怎么应对？区分合法用工自主权与变相逼退",
+      "source": "劳动权益保护实务",
+      "category": "辞退",
+      "publishedAt": "2026-11-10",
+      "summary": "用人单位调岗降薪需具备生产经营必要性、不得具有侮辱性或惩罚性、且不得大幅降低薪酬待遇。劳动者应书面提出异议并继续正常出勤打卡，切勿赌气旷工。",
+      "url": "https://www.court.gov.cn/",
+      "relatedLaws": ["《中华人民共和国劳动合同法》第三十五条", "《中华人民共和国劳动合同法》第三十八条"]
+    }
+  ]
+}
